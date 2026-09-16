@@ -1,0 +1,100 @@
+# The manifest templates the controller stamps out for each version.
+# The controller replaces __VERSION__ and __IMAGE__ as plain text.
+#
+# All three objects share one metadata.name, because the controller addresses a
+# version's Deployment, ScaledObject and PDB by that single name.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dbos-worker-template
+  namespace: dbos-workers
+data:
+  deployment.yaml: |
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: dbos-worker-__VERSION__
+      namespace: dbos-workers
+      labels:
+        app.kubernetes.io/name: dbos-worker
+        app.kubernetes.io/managed-by: dbos-version-controller
+        dbos-app-version: __VERSION__
+    spec:
+      replicas: 1
+      selector:
+        matchLabels:
+          app.kubernetes.io/name: dbos-worker
+          dbos-app-version: __VERSION__
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: dbos-worker
+            dbos-app-version: __VERSION__
+        spec:
+          terminationGracePeriodSeconds: 300
+          containers:
+            - name: worker
+              image: __IMAGE__
+              command: ["python", "-m", "myapp.worker"]
+              env:
+                - name: DBOS_APPLICATION_VERSION
+                  value: __VERSION__
+                - name: DBOS_SYSTEM_DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: dbos-database
+                      key: system-database-url
+              resources:
+                requests:
+                  cpu: 250m
+                  memory: 512Mi
+                limits:
+                  memory: 1Gi
+
+  scaledobject.yaml: |
+    apiVersion: keda.sh/v1alpha1
+    kind: ScaledObject
+    metadata:
+      name: dbos-worker-__VERSION__
+      namespace: dbos-workers
+      labels:
+        app.kubernetes.io/name: dbos-worker
+        app.kubernetes.io/managed-by: dbos-version-controller
+        dbos-app-version: __VERSION__
+    spec:
+      scaleTargetRef:
+        name: dbos-worker-__VERSION__
+      minReplicaCount: 1
+      maxReplicaCount: 10
+      pollingInterval: 15
+      cooldownPeriod: 300
+      # The controller reads the FIRST trigger. It reuses the type, the
+      # authenticationRef and every metadata key except query and
+      # targetQueryValue when it builds the drain trigger.
+      triggers:
+        - type: postgresql
+          metricType: AverageValue
+          authenticationRef:
+            name: dbos-postgres-auth
+          metadata:
+            query: >-
+              SELECT count(*) FROM dbos.workflow_status
+              WHERE application_version = '__VERSION__' AND status IN ('ENQUEUED','PENDING')
+            targetQueryValue: "4"
+
+  pdb.yaml: |
+    apiVersion: policy/v1
+    kind: PodDisruptionBudget
+    metadata:
+      name: dbos-worker-__VERSION__
+      namespace: dbos-workers
+      labels:
+        app.kubernetes.io/name: dbos-worker
+        app.kubernetes.io/managed-by: dbos-version-controller
+        dbos-app-version: __VERSION__
+    spec:
+      maxUnavailable: 1
+      selector:
+        matchLabels:
+          app.kubernetes.io/name: dbos-worker
+          dbos-app-version: __VERSION__

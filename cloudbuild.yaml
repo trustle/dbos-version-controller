@@ -1,0 +1,14 @@
+# Optional. Trustle builds the controller image with Google Cloud Build.
+# Delete this file if you build the image another way.
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --tag=us.gcr.io/trustle-core-cicd/dbos-version-controller:$SHORT_SHA
+      - .
+
+images:
+  - us.gcr.io/trustle-core-cicd/dbos-version-controller:$SHORT_SHA
+
+options:
+  logging: CLOUD_LOGGING_ONLY

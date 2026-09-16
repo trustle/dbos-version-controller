@@ -1,0 +1,100 @@
+# The controller itself: ServiceAccount, Role, RoleBinding and Deployment.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dbos-version-controller
+  namespace: dbos-workers
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: dbos-version-controller
+  namespace: dbos-workers
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "patch", "delete"]
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch", "create", "patch", "delete"]
+  - apiGroups: ["keda.sh"]
+    resources: ["scaledobjects"]
+    verbs: ["get", "list", "watch", "create", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dbos-version-controller
+  namespace: dbos-workers
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: dbos-version-controller
+subjects:
+  - kind: ServiceAccount
+    name: dbos-version-controller
+    namespace: dbos-workers
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dbos-version-controller
+  namespace: dbos-workers
+  labels:
+    app.kubernetes.io/name: dbos-version-controller
+spec:
+  replicas: 1
+  # Never run two. A second controller reconciles the same desired state and
+  # fights the first one.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: dbos-version-controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: dbos-version-controller
+    spec:
+      serviceAccountName: dbos-version-controller
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: controller
+          image: registry.example.com/dbos-version-controller:0.1.0
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: DVC_NAMESPACE
+              value: dbos-workers
+            - name: DVC_DESIRED_CONFIGMAP
+              value: dbos-worker-desired
+            - name: DVC_TEMPLATE_CONFIGMAP
+              value: dbos-worker-template
+            - name: DVC_INTERVAL_SECONDS
+              value: "30"
+            - name: DVC_GRACE_SECONDS
+              value: "600"
+            - name: DVC_DRY_RUN
+              value: "false"
+            - name: DVC_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: dbos-database
+                  key: system-database-url
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
