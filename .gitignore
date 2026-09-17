@@ -10,3 +10,4 @@ dist/
 coverage.xml
 htmlcov/
 .python-version
+.k3s/

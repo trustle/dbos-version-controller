@@ -12,9 +12,12 @@ metadata:
   name: dbos-version-controller
   namespace: dbos-workers
 rules:
-  - apiGroups: [""]
-    resources: ["configmaps"]
+  - apiGroups: ["dbos.trustle.com"]
+    resources: ["workerversionsets"]
     verbs: ["get", "list", "watch"]
+  - apiGroups: ["dbos.trustle.com"]
+    resources: ["workerversionsets/status"]
+    verbs: ["patch", "update"]
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list"]
@@ -68,7 +71,7 @@ spec:
         runAsNonRoot: true
       containers:
         - name: controller
-          image: registry.example.com/dbos-version-controller:0.1.0
+          image: registry.example.com/dbos-version-controller:0.2.0
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -77,10 +80,6 @@ spec:
           env:
             - name: DVC_NAMESPACE
               value: dbos-workers
-            - name: DVC_DESIRED_CONFIGMAP
-              value: dbos-worker-desired
-            - name: DVC_TEMPLATE_CONFIGMAP
-              value: dbos-worker-template
             - name: DVC_INTERVAL_SECONDS
               value: "30"
             - name: DVC_GRACE_SECONDS
