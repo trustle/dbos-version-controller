@@ -134,8 +134,12 @@ Rules for each template:
   labels. Change the label names or the managed-by value with
   `DVC_VERSION_LABEL` and `DVC_MANAGED_BY`.
 - The controller adds `dbos.trustle.com/worker-version-set: <set name>` to every
-  rendered object, and an `ownerReference` to the set. Deleting the set
-  garbage-collects its objects.
+  rendered object. Deleting a WorkerVersionSet does not delete its worker
+  objects. Deletion is always the controller's decision, gated on zero rows,
+  zero pods and the grace period. To retire an application, point
+  `spec.version` at the last version, let the others drain, then delete the
+  remaining objects by label. A re-created set with the same name adopts its
+  objects.
 - Set `DBOS_APPLICATION_VERSION` to `__VERSION__` in the worker container, so
   the executor reports the version its objects are labelled with.
 - The ScaledObject needs at least one `postgresql` trigger. The controller reads
@@ -177,8 +181,10 @@ status:
   pods serving its grace period. `drainedSince` appears only while `Drained`.
 - `outstanding` is reported for every version, including `Current`, and is
   absent only when the database was unreachable.
-- The `Ready` reason is `Reconciled`, `InvalidSpec`, `DatabaseUnavailable` or
-  `ReconcileError`.
+- The `Ready` reason is `Reconciled`, `InvalidSpec`, `DatabaseUnavailable`,
+  `DrainFailed` or `ReconcileError`. `DatabaseUnavailable` takes precedence
+  over `DrainFailed` when both apply, since it explains any drain failure that
+  follows from it.
 
 ```console
 $ kubectl get wvs -n dbos-workers
@@ -241,8 +247,9 @@ its sets are namespaced.
   full grace period. Work that returns clears the marker and restarts the clock.
 - A rollback to a drained version clears its marker, so the version gets a fresh
   grace period rather than an immediate delete.
-- A failed drain logs and continues with the remaining versions, and a failed
-  set logs and continues with the remaining sets.
+- A failed drain logs, continues with the remaining versions, and reports
+  `Ready=False`/`DrainFailed` naming the versions that failed. A failed set
+  logs and continues with the remaining sets.
 - `DVC_DRY_RUN=true` performs no write to a worker object. Dry run writes two
   things: the WorkerVersionSet status and the drained-since marker annotation.
   Both record what the controller observed. It creates, patches and deletes

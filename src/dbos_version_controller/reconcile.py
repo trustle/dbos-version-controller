@@ -16,7 +16,6 @@ psycopg, which keeps a crashing worker version from taking the controller with
 it.
 """
 
-import copy
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -320,29 +319,19 @@ def _timestamp(moment: datetime) -> str:
     return moment.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _owner_reference(metadata: dict[str, Any]) -> dict[str, Any]:
-    """Build the ownerReference tying a set's objects to the set itself.
+def _own(manifest: dict[str, Any], set_name: str) -> dict[str, Any]:
+    """Stamp the set label onto one rendered manifest.
 
-    ``blockOwnerDeletion`` stays false: deleting the set must not wait on the
-    controller, and the objects are garbage-collected either way.
+    Ownership is label-based, not an ownerReference: deleting and re-applying
+    the WorkerVersionSet (Argo prune/recreate, ``kubectl replace --force``)
+    must not garbage-collect a draining Deployment with work in flight.
+    Deletion stays the controller's own decision. A set re-created with the
+    same name adopts its existing objects by label.
     """
-    return {
-        "apiVersion": f"{CRD_GROUP}/{CRD_VERSION}",
-        "kind": CRD_KIND,
-        "name": metadata["name"],
-        "uid": metadata.get("uid", ""),
-        "controller": True,
-        "blockOwnerDeletion": False,
-    }
-
-
-def _own(manifest: dict[str, Any], set_name: str, owner: dict[str, Any]) -> dict[str, Any]:
-    """Stamp the set label and the ownerReference onto one rendered manifest."""
     metadata = manifest.setdefault("metadata", {})
     labels = metadata.get("labels") or {}
     labels.setdefault(SET_LABEL, set_name)
     metadata["labels"] = labels
-    metadata["ownerReferences"] = [owner]
     return manifest
 
 
@@ -364,22 +353,24 @@ def _apply_desired(
     version: str,
     image: str,
     set_name: str,
-    owner: dict[str, Any],
 ) -> dict[str, Any]:
-    """Create or patch the three objects of the desired version; return the rendered ScaledObject."""
+    """Create or patch the three objects of the desired version; return the rendered ScaledObject.
+
+    Clearing the drained-since marker on an existing Deployment goes through
+    ``kube.mark``, not ``kube.patch``: ``mark`` bypasses dry run the same way
+    ``_drain`` writes the marker, so a rollback in dry run does not leave a
+    stale marker that the next drain would read as already past grace.
+    """
     rendered: dict[Kind, dict[str, Any]] = {}
     for kind in KINDS:
-        manifest = _own(render(template[TEMPLATE_KEYS[kind]], version, image), set_name, owner)
+        manifest = _own(render(template[TEMPLATE_KEYS[kind]], version, image), set_name)
         rendered[kind] = manifest
         name = manifest["metadata"]["name"]
         if kube.exists(kind, name):
-            patch_body = manifest
-            if kind == "deployment":
-                patch_body = copy.deepcopy(manifest)
-                annotations = patch_body["metadata"].get("annotations") or {}
-                patch_body["metadata"]["annotations"] = {**annotations, DRAINED_SINCE_ANNOTATION: None}
-            kube.patch(kind, name, patch_body)
+            kube.patch(kind, name, manifest)
             created = False
+            if kind == "deployment":
+                kube.mark(name, {"metadata": {"annotations": {DRAINED_SINCE_ANNOTATION: None}}})
         else:
             kube.create(kind, manifest)
             created = True
@@ -396,7 +387,6 @@ def _drain(
     now: datetime,
     grace_seconds: float,
     set_name: str,
-    owner: dict[str, Any],
 ) -> dict[str, Any]:
     """Park one non-desired version, and delete it once it has been idle for the grace period.
 
@@ -418,7 +408,7 @@ def _drain(
         kube.patch("scaledobject", deployment.name, patch)
     else:
         manifest = render(scaledobject_template, deployment.version, image="unused")
-        kube.create("scaledobject", _own(_merge_patch(manifest, patch), set_name, owner))
+        kube.create("scaledobject", _own(_merge_patch(manifest, patch), set_name))
     logger.info("drain", name=deployment.name, version=deployment.version, rows=rows, pods=deployment.replicas)
 
     stamp = deployment.annotations.get(DRAINED_SINCE_ANNOTATION)
@@ -540,10 +530,10 @@ def reconcile_set(
         return
 
     grace_seconds = float(spec["graceSeconds"]) if spec.get("graceSeconds") is not None else settings.grace_seconds
-    owner = _owner_reference(metadata)
-    template_scaled_object = _apply_desired(kube, template, version, image, set_name, owner)
+    template_scaled_object = _apply_desired(kube, template, version, image, set_name)
 
     db_available = True
+    failed_drains: list[str] = []
 
     def count(target_version: str) -> int | None:
         nonlocal db_available
@@ -580,7 +570,6 @@ def reconcile_set(
                     now,
                     grace_seconds,
                     set_name,
-                    owner,
                 )
             )
         except Exception:
@@ -590,11 +579,12 @@ def reconcile_set(
                 version=deployment.version,
                 exc_info=True,
             )
+            failed_drains.append(deployment.version)
             draining.append(version_status(deployment.version, "Draining", deployment.image, deployment.replicas, rows))
 
-    if db_available:
-        _report(kube, item, now, [desired, *draining], "True", "Reconciled", "Reconciled the worker versions")
-    else:
+    # DatabaseUnavailable takes precedence over DrainFailed: an unreachable database
+    # explains every drain failure that follows from it, and is the more actionable cause.
+    if not db_available:
         _report(
             kube,
             item,
@@ -604,6 +594,18 @@ def reconcile_set(
             "DatabaseUnavailable",
             "Cannot count outstanding workflows; deleted nothing this tick",
         )
+    elif failed_drains:
+        _report(
+            kube,
+            item,
+            now,
+            [desired, *draining],
+            "False",
+            "DrainFailed",
+            f"Failed to drain version(s): {', '.join(failed_drains)}",
+        )
+    else:
+        _report(kube, item, now, [desired, *draining], "True", "Reconciled", "Reconciled the worker versions")
 
 
 def reconcile(
