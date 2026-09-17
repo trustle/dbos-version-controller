@@ -1,14 +1,15 @@
-"""Reconcile the per-version worker objects against one desired version.
+"""Reconcile the per-version worker objects of every WorkerVersionSet.
 
 A DBOS application runs one worker Deployment per application version, so a
 version that is being replaced can still finish its in-flight workflows: DBOS
 recovers a workflow only onto an executor reporting the same application
 version. A Git-rendered chart cannot hold that list of versions, because the
-list changes with the workload, not with the commit. Here Git holds one desired
-``(version, image)`` pair and this controller owns the per-version objects: it
-applies the desired version's Deployment, ScaledObject and PDB, puts every other
-managed version into draining, and deletes a drained version once it has held
-zero outstanding workflows and zero pods for the grace period.
+list changes with the workload, not with the commit. Here Git holds one
+``WorkerVersionSet`` custom resource per application and this controller owns
+the per-version objects: it applies the desired version's Deployment,
+ScaledObject and PDB, puts every other version of that set into draining, and
+deletes a drained version once it has held zero outstanding workflows and zero
+pods for the grace period. It reports what it saw on the set's status.
 
 The controller never launches DBOS. It reads ``dbos.workflow_status`` with
 psycopg, which keeps a crashing worker version from taking the controller with
@@ -36,18 +37,24 @@ Kind = Literal["deployment", "scaledobject", "pdb"]
 
 KINDS: tuple[Kind, ...] = ("deployment", "scaledobject", "pdb")
 TEMPLATE_KEYS: dict[Kind, str] = {
-    "deployment": "deployment.yaml",
-    "scaledobject": "scaledobject.yaml",
-    "pdb": "pdb.yaml",
+    "deployment": "deployment",
+    "scaledobject": "scaledObject",
+    "pdb": "podDisruptionBudget",
 }
 
 KEDA_GROUP = "keda.sh"
 KEDA_VERSION = "v1alpha1"
 KEDA_PLURAL = "scaledobjects"
 
+CRD_GROUP = "dbos.trustle.com"
+CRD_VERSION = "v1alpha1"
+CRD_PLURAL = "workerversionsets"
+CRD_KIND = "WorkerVersionSet"
+
 DELETE_ORDER: tuple[Kind, ...] = ("scaledobject", "pdb", "deployment")
 
 MANAGED_BY_LABEL = "app.kubernetes.io/managed-by"
+SET_LABEL = "dbos.trustle.com/worker-version-set"
 DRAINED_SINCE_ANNOTATION = "dbos-version-controller/drained-since"
 
 VERSION_PATTERN = re.compile(r"^[a-z0-9][a-z0-9.-]{0,48}$")
@@ -79,6 +86,7 @@ class ManagedDeployment:
     version: str
     replicas: int
     annotations: dict[str, str]
+    image: str | None = None
 
 
 class KubeClient:
@@ -114,26 +122,48 @@ class KubeClient:
         self._policy_patch = k8s_client.PolicyV1Api(patch_api_client)
         self._custom_patch = k8s_client.CustomObjectsApi(patch_api_client)
 
-    def read_configmap(self, name: str) -> dict[str, str]:
-        config_map: Any = self._core.read_namespaced_config_map(name=name, namespace=self._namespace)
-        return dict(config_map.data or {})
+    def list_worker_version_sets(self) -> list[dict[str, Any]]:
+        response: Any = self._custom.list_namespaced_custom_object(
+            group=CRD_GROUP,
+            version=CRD_VERSION,
+            namespace=self._namespace,
+            plural=CRD_PLURAL,
+        )
+        return list(response.get("items") or [])
 
-    def list_managed_deployments(self, managed_by: str, version_label: str) -> list[ManagedDeployment]:
+    def patch_status(self, name: str, status: dict[str, Any]) -> None:
+        """Patch one set's status subresource.
+
+        The status is an observation, not an action, so it is written in dry-run
+        mode too: an operator trying the controller out still sees what it found.
+        """
+        self._custom_patch.patch_namespaced_custom_object_status(
+            group=CRD_GROUP,
+            version=CRD_VERSION,
+            namespace=self._namespace,
+            plural=CRD_PLURAL,
+            name=name,
+            body={"status": status},
+        )
+
+    def list_managed_deployments(self, managed_by: str, version_label: str, set_name: str) -> list[ManagedDeployment]:
         response: Any = self._apps.list_namespaced_deployment(
             namespace=self._namespace,
-            label_selector=f"{MANAGED_BY_LABEL}={managed_by}",
+            label_selector=f"{MANAGED_BY_LABEL}={managed_by},{SET_LABEL}={set_name}",
         )
         managed: list[ManagedDeployment] = []
         for item in response.items:
             metadata = item.metadata
             labels = metadata.labels or {}
             status = item.status
+            containers = getattr(item.spec.template.spec, "containers", None) or []
             managed.append(
                 ManagedDeployment(
                     name=metadata.name,
                     version=labels.get(version_label, ""),
                     replicas=(status.replicas if status and status.replicas else 0),
                     annotations=dict(metadata.annotations or {}),
+                    image=(containers[0].image if containers else None),
                 )
             )
         return managed
@@ -275,11 +305,61 @@ def _parse_drained_since(value: str) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
-def _apply_desired(kube: KubeClient, template: dict[str, str], version: str, image: str) -> dict[str, Any]:
+def _timestamp(moment: datetime) -> str:
+    """Render one RFC 3339 instant the way Kubernetes writes its own timestamps."""
+    return moment.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _owner_reference(metadata: dict[str, Any]) -> dict[str, Any]:
+    """Build the ownerReference tying a set's objects to the set itself.
+
+    ``blockOwnerDeletion`` stays false: deleting the set must not wait on the
+    controller, and the objects are garbage-collected either way.
+    """
+    return {
+        "apiVersion": f"{CRD_GROUP}/{CRD_VERSION}",
+        "kind": CRD_KIND,
+        "name": metadata["name"],
+        "uid": metadata.get("uid", ""),
+        "controller": True,
+        "blockOwnerDeletion": False,
+    }
+
+
+def _own(manifest: dict[str, Any], set_name: str, owner: dict[str, Any]) -> dict[str, Any]:
+    """Stamp the set label and the ownerReference onto one rendered manifest."""
+    metadata = manifest.setdefault("metadata", {})
+    labels = metadata.get("labels") or {}
+    labels.setdefault(SET_LABEL, set_name)
+    metadata["labels"] = labels
+    metadata["ownerReferences"] = [owner]
+    return manifest
+
+
+def spec_problem(version: str, image: str, template: dict[str, str]) -> str | None:
+    """Return why a set's spec is unusable, or ``None`` when it is usable."""
+    if not VERSION_PATTERN.match(version):
+        return f"spec.version {version!r} does not match {VERSION_PATTERN.pattern}"
+    if not IMAGE_PATTERN.match(image):
+        return f"spec.image {image!r} does not match {IMAGE_PATTERN.pattern}"
+    missing = [TEMPLATE_KEYS[kind] for kind in KINDS if not (template.get(TEMPLATE_KEYS[kind]) or "").strip()]
+    if missing:
+        return f"spec.template is missing {', '.join(missing)}"
+    return None
+
+
+def _apply_desired(
+    kube: KubeClient,
+    template: dict[str, str],
+    version: str,
+    image: str,
+    set_name: str,
+    owner: dict[str, Any],
+) -> dict[str, Any]:
     """Create or patch the three objects of the desired version; return the rendered ScaledObject."""
     rendered: dict[Kind, dict[str, Any]] = {}
     for kind in KINDS:
-        manifest = render(template[TEMPLATE_KEYS[kind]], version, image)
+        manifest = _own(render(template[TEMPLATE_KEYS[kind]], version, image), set_name, owner)
         rendered[kind] = manifest
         name = manifest["metadata"]["name"]
         if kube.exists(kind, name):
@@ -305,7 +385,9 @@ def _drain(
     rows: int | None,
     now: datetime,
     grace_seconds: float,
-) -> None:
+    set_name: str,
+    owner: dict[str, Any],
+) -> dict[str, Any]:
     """Park one non-desired version, and delete it once it has been idle for the grace period.
 
     ``rows is None`` means the outstanding count is unknown. An unknown count
@@ -316,24 +398,28 @@ def _drain(
     template for this version and merge the drain patch over it, rather than
     patching an object that does not exist and leaving the Deployment with no
     KEDA trigger.
+
+    Returns the status entry describing what this version looks like now.
     """
+    entry = version_status(deployment.version, "Draining", deployment.image, deployment.replicas, rows)
+
     patch = drain_patch(template_scaled_object, deployment.version)
     if kube.exists("scaledobject", deployment.name):
         kube.patch("scaledobject", deployment.name, patch)
     else:
         manifest = render(scaledobject_template, deployment.version, image="unused")
-        kube.create("scaledobject", _merge_patch(manifest, patch))
+        kube.create("scaledobject", _own(_merge_patch(manifest, patch), set_name, owner))
     logger.info("drain", name=deployment.name, version=deployment.version, rows=rows, pods=deployment.replicas)
 
     stamp = deployment.annotations.get(DRAINED_SINCE_ANNOTATION)
     if rows is None:
-        return
+        return entry
 
     if rows > 0 or deployment.replicas > 0:
         if stamp:
             kube.patch("deployment", deployment.name, {"metadata": {"annotations": {DRAINED_SINCE_ANNOTATION: None}}})
             logger.info("Worker version is busy again; cleared drained marker", name=deployment.name)
-        return
+        return entry
 
     drained_since = _parse_drained_since(stamp) if stamp else None
     if drained_since is None:
@@ -343,41 +429,117 @@ def _drain(
             {"metadata": {"annotations": {DRAINED_SINCE_ANNOTATION: now.isoformat()}}},
         )
         logger.info("Worker version reached zero; marked drained", name=deployment.name, version=deployment.version)
-        return
+        entry["phase"] = "Drained"
+        entry["drainedSince"] = _timestamp(now)
+        return entry
 
+    entry["phase"] = "Drained"
+    entry["drainedSince"] = _timestamp(drained_since)
     if (now - drained_since).total_seconds() < grace_seconds:
-        return
+        return entry
 
     for kind in DELETE_ORDER:
         kube.delete(kind, deployment.name)
     logger.info("Deleted drained worker version", name=deployment.name, version=deployment.version)
+    return entry
 
 
-def reconcile(
+def version_status(
+    version: str,
+    phase: str,
+    image: str | None,
+    replicas: int,
+    rows: int | None,
+) -> dict[str, Any]:
+    """Build one entry of ``status.versions``, leaving unknown fields out."""
+    entry: dict[str, Any] = {"version": version, "phase": phase, "replicas": replicas}
+    if image:
+        entry["image"] = image
+    if rows is not None:
+        entry["outstanding"] = rows
+    return entry
+
+
+def _status(
+    item: dict[str, Any],
+    now: datetime,
+    versions: list[dict[str, Any]],
+    ready: str,
+    reason: str,
+    message: str,
+) -> dict[str, Any]:
+    """Build the status block, keeping the Ready transition time when nothing changed."""
+    previous = (item.get("status") or {}).get("conditions") or []
+    prior = next((condition for condition in previous if condition.get("type") == "Ready"), None)
+    unchanged = prior is not None and prior.get("status") == ready and prior.get("reason") == reason
+    transition = prior.get("lastTransitionTime") if unchanged and prior else None
+    return {
+        "observedGeneration": (item.get("metadata") or {}).get("generation", 0),
+        "lastReconcileTime": _timestamp(now),
+        "versions": versions,
+        "conditions": [
+            {
+                "type": "Ready",
+                "status": ready,
+                "reason": reason,
+                "message": message,
+                "lastTransitionTime": transition or _timestamp(now),
+            }
+        ],
+    }
+
+
+def _report(
+    kube: KubeClient,
+    item: dict[str, Any],
+    now: datetime,
+    versions: list[dict[str, Any]],
+    ready: str,
+    reason: str,
+    message: str,
+) -> None:
+    name = (item.get("metadata") or {}).get("name", "")
+    try:
+        kube.patch_status(name, _status(item, now, versions, ready, reason, message))
+    except Exception:
+        logger.warning("Failed to patch WorkerVersionSet status", name=name, exc_info=True)
+
+
+def reconcile_set(
     kube: KubeClient,
     settings: ControllerSettings,
     outstanding: Callable[[str], int],
-    now: Callable[[], datetime],
+    item: dict[str, Any],
+    now: datetime,
 ) -> None:
-    """Run one reconcile tick.
+    """Reconcile one WorkerVersionSet and patch its status.
 
-    A bad desired version skips the whole tick: the controller deletes nothing
-    while it cannot tell which version is desired.
+    An unusable spec skips every write for this set: the controller deletes
+    nothing while it cannot tell which version is desired.
     """
-    desired = kube.read_configmap(settings.desired_configmap)
-    version = (desired.get("version") or "").strip()
-    image = (desired.get("image") or "").strip()
-    if not VERSION_PATTERN.match(version) or not IMAGE_PATTERN.match(image):
-        logger.error("Desired worker version is invalid; skipping tick", version=version, image=image)
+    metadata = item.get("metadata") or {}
+    spec = item.get("spec") or {}
+    set_name = metadata["name"]
+    version = str(spec.get("version") or "").strip()
+    image = str(spec.get("image") or "").strip()
+    template: dict[str, str] = spec.get("template") or {}
+
+    problem = spec_problem(version, image, template)
+    if problem:
+        logger.error("WorkerVersionSet spec is unusable; skipping it", name=set_name, problem=problem)
+        _report(kube, item, now, [], "False", "InvalidSpec", problem)
         return
 
-    template = kube.read_configmap(settings.template_configmap)
-    template_scaled_object = _apply_desired(kube, template, version, image)
+    grace_seconds = float(spec["graceSeconds"]) if spec.get("graceSeconds") is not None else settings.grace_seconds
+    owner = _owner_reference(metadata)
+    template_scaled_object = _apply_desired(kube, template, version, image, set_name, owner)
 
-    tick_now = now()
+    desired = version_status(version, "Current", image, 0, None)
+    draining: list[dict[str, Any]] = []
     db_available = True
-    for deployment in kube.list_managed_deployments(settings.managed_by, settings.version_label):
+    for deployment in kube.list_managed_deployments(settings.managed_by, settings.version_label, set_name):
         if deployment.version == version:
+            desired = version_status(version, "Current", deployment.image or image, deployment.replicas, None)
             continue
         if not VERSION_PATTERN.match(deployment.version):
             logger.warning("Managed worker carries an unusable version label; leaving it alone", name=deployment.name)
@@ -392,14 +554,18 @@ def reconcile(
                 logger.warning("Cannot count outstanding workflows; deleting nothing this tick", exc_info=True)
 
         try:
-            _drain(
-                kube,
-                deployment,
-                template_scaled_object,
-                template[TEMPLATE_KEYS["scaledobject"]],
-                rows,
-                tick_now,
-                settings.grace_seconds,
+            draining.append(
+                _drain(
+                    kube,
+                    deployment,
+                    template_scaled_object,
+                    template[TEMPLATE_KEYS["scaledobject"]],
+                    rows,
+                    now,
+                    grace_seconds,
+                    set_name,
+                    owner,
+                )
             )
         except Exception:
             logger.warning(
@@ -408,3 +574,40 @@ def reconcile(
                 version=deployment.version,
                 exc_info=True,
             )
+            draining.append(version_status(deployment.version, "Draining", deployment.image, deployment.replicas, rows))
+
+    if db_available:
+        _report(kube, item, now, [desired, *draining], "True", "Reconciled", "Reconciled the worker versions")
+    else:
+        _report(
+            kube,
+            item,
+            now,
+            [desired, *draining],
+            "False",
+            "DatabaseUnavailable",
+            "Cannot count outstanding workflows; deleted nothing this tick",
+        )
+
+
+def reconcile(
+    kube: KubeClient,
+    settings: ControllerSettings,
+    outstanding: Callable[[str], int],
+    now: Callable[[], datetime],
+) -> None:
+    """Run one reconcile tick over every WorkerVersionSet in the namespace.
+
+    Each set is reconciled on its own. A set that fails is reported on its own
+    status and does not stop the sets after it.
+    """
+    tick_now = now()
+    for item in kube.list_worker_version_sets():
+        name = (item.get("metadata") or {}).get("name")
+        if not name:
+            continue
+        try:
+            reconcile_set(kube, settings, outstanding, item, tick_now)
+        except Exception as exc:
+            logger.exception("Failed to reconcile WorkerVersionSet", name=name)
+            _report(kube, item, tick_now, [], "False", "ReconcileError", str(exc) or exc.__class__.__name__)
