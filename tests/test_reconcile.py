@@ -14,6 +14,9 @@ from dbos_version_controller.reconcile import (
     ManagedDeployment,
     reconcile,
 )
+from dbos_version_controller.reconcile import (
+    logger as reconcile_logger,
+)
 from dbos_version_controller.settings import ControllerSettings
 
 DESIRED_VERSION = "v20260916135248"
@@ -124,10 +127,11 @@ class FakeKubeClient:
     set name to its Deployments, which is what the real label selector returns.
     """
 
-    def __init__(self, existing=(), managed=(), sets=None):
+    def __init__(self, existing=(), managed=(), sets=None, dry_run=False):
         self.sets = list(sets) if sets is not None else [worker_version_set()]
         self.existing = set(existing)
         self.managed = managed if isinstance(managed, dict) else {SET_NAME: list(managed)}
+        self._dry_run = dry_run
         self.created = []
         self.patched = []
         self.deleted = []
@@ -146,13 +150,27 @@ class FakeKubeClient:
         return (kind, name) in self.existing
 
     def create(self, kind, manifest):
+        name = manifest["metadata"]["name"]
+        if self._dry_run:
+            reconcile_logger.info("Would create worker object", kind=kind, name=name)
+            return
         self.created.append((kind, manifest))
 
     def patch(self, kind, name, body):
+        if self._dry_run:
+            reconcile_logger.info("Would patch worker object", kind=kind, name=name)
+            return
         self.patched.append((kind, name, body))
 
     def delete(self, kind, name):
+        if self._dry_run:
+            reconcile_logger.info("Would delete worker object", kind=kind, name=name)
+            return
         self.deleted.append((kind, name))
+
+    def mark(self, name, body):
+        """The drained-since marker bypasses the dry-run guard, like the real KubeClient.mark."""
+        self.patched.append(("deployment", name, body))
 
     def patches_for(self, kind, name):
         return [body for k, n, body in self.patched if k == kind and n == name]
@@ -335,7 +353,7 @@ def test_first_idle_tick_stamps_the_drained_marker_and_deletes_nothing():
     kube = run(FakeKubeClient(managed=[managed_deployment()]))
 
     patch = kube.patches_for("deployment", f"dbos-worker-{OLD_VERSION}")[0]
-    assert patch["metadata"]["annotations"][DRAINED_SINCE_ANNOTATION] == NOW.isoformat()
+    assert patch["metadata"]["annotations"][DRAINED_SINCE_ANNOTATION] == NOW_STAMP
     assert not kube.deleted
 
 
@@ -495,6 +513,7 @@ def test_status_reports_each_phase_and_keeps_drained_since_to_drained_versions()
         "phase": "Current",
         "image": DESIRED_IMAGE,
         "replicas": 3,
+        "outstanding": 0,
     }
     assert kube.version_status(busy.version) == {
         "version": busy.version,
@@ -569,6 +588,36 @@ def test_status_is_written_in_dry_run_because_it_is_an_observation():
     )
 
 
+def test_mark_is_written_in_dry_run_because_it_is_an_observation():
+    api_client, _ = _recording_api_client()
+    patch_api_client, patch_rest_client = _recording_api_client()
+    kube = KubeClient(namespace=NAMESPACE, dry_run=True, api_client=api_client, patch_api_client=patch_api_client)
+
+    kube.mark(f"dbos-worker-{OLD_VERSION}", {"metadata": {"annotations": {DRAINED_SINCE_ANNOTATION: NOW_STAMP}}})
+
+    _, kwargs = patch_rest_client.PATCH.call_args
+    assert kwargs["body"] == {"metadata": {"annotations": {DRAINED_SINCE_ANNOTATION: NOW_STAMP}}}
+
+
+def test_dry_run_still_writes_the_drained_marker_so_the_grace_clock_advances():
+    kube = run(FakeKubeClient(managed=[managed_deployment()], dry_run=True))
+
+    marker_patch = kube.patches_for("deployment", f"dbos-worker-{OLD_VERSION}")[0]
+    assert marker_patch["metadata"]["annotations"][DRAINED_SINCE_ANNOTATION] == NOW_STAMP
+
+
+def test_dry_run_past_grace_previews_all_three_deletes(caplog):
+    expired = {DRAINED_SINCE_ANNOTATION: (NOW - timedelta(seconds=601)).isoformat()}
+    kube = FakeKubeClient(managed=[managed_deployment(annotations=expired)], dry_run=True)
+
+    with caplog.at_level("INFO", logger="dbos_version_controller.reconcile"):
+        run(kube)
+
+    would_delete = [record for record in caplog.records if record.getMessage().startswith("Would delete")]
+    assert len(would_delete) == 3
+    assert not kube.deleted
+
+
 def test_patches_are_sent_as_json_merge_patches():
     patch_api_client, patch_rest_client = _recording_api_client()
     api_client, _ = _recording_api_client()
@@ -605,8 +654,14 @@ class StatefulFakeKubeClient(FakeKubeClient):
 
     def patch(self, kind, name, body):
         super().patch(kind, name, body)
-        if kind != "deployment":
-            return
+        if kind == "deployment":
+            self._fold_annotations(name, body)
+
+    def mark(self, name, body):
+        super().mark(name, body)
+        self._fold_annotations(name, body)
+
+    def _fold_annotations(self, name, body):
         patched_annotations = (body.get("metadata") or {}).get("annotations")
         if patched_annotations is None:
             return
@@ -646,7 +701,7 @@ def test_rollback_gets_a_fresh_grace_period_instead_of_an_immediate_delete():
     run(kube, outstanding=lambda version: 0)  # OLD_VERSION drains again and hits 0 rows / 0 pods.
 
     drain_patch = kube.patches_for("deployment", f"dbos-worker-{OLD_VERSION}")[0]
-    assert drain_patch["metadata"]["annotations"][DRAINED_SINCE_ANNOTATION] == NOW.isoformat()
+    assert drain_patch["metadata"]["annotations"][DRAINED_SINCE_ANNOTATION] == NOW_STAMP
     assert not kube.deleted
 
 

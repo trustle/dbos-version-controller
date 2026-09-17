@@ -158,6 +158,7 @@ status:
       phase: Current
       image: registry.example.com/app:8332cd5
       replicas: 1
+      outstanding: 0
     - version: v20260901120000
       phase: Drained
       outstanding: 0
@@ -174,7 +175,8 @@ status:
 - `phase` is `Current` for the desired version, `Draining` for an old version
   KEDA holds at zero, and `Drained` for an old version at zero rows and zero
   pods serving its grace period. `drainedSince` appears only while `Drained`.
-- `outstanding` is absent when the database was unreachable.
+- `outstanding` is reported for every version, including `Current`, and is
+  absent only when the database was unreachable.
 - The `Ready` reason is `Reconciled`, `InvalidSpec`, `DatabaseUnavailable` or
   `ReconcileError`.
 
@@ -241,8 +243,10 @@ its sets are namespaced.
   grace period rather than an immediate delete.
 - A failed drain logs and continues with the remaining versions, and a failed
   set logs and continues with the remaining sets.
-- `DVC_DRY_RUN=true` performs no write to a worker object. It still patches the
-  set status, which records what the controller saw.
+- `DVC_DRY_RUN=true` performs no write to a worker object. Dry run writes two
+  things: the WorkerVersionSet status and the drained-since marker annotation.
+  Both record what the controller observed. It creates, patches and deletes
+  nothing else.
 - Run exactly one replica. Two controllers reconciling the same set fight each
   other. Use `strategy: Recreate`.
 - The controller never starts DBOS. It reads `dbos.workflow_status` with

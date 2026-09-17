@@ -146,6 +146,16 @@ class KubeClient:
             body={"status": status},
         )
 
+    def mark(self, name: str, body: dict[str, Any]) -> None:
+        """Patch the drained-since marker annotation on one Deployment.
+
+        Like the status subresource, this records what the controller observed
+        rather than acting on the cluster, so it is written in dry-run mode too.
+        Without it, the grace clock never advances under ``DVC_DRY_RUN`` and a
+        dry-run tick past grace never logs ``Would delete``.
+        """
+        self._apps_patch.patch_namespaced_deployment(name=name, namespace=self._namespace, body=body)
+
     def list_managed_deployments(self, managed_by: str, version_label: str, set_name: str) -> list[ManagedDeployment]:
         response: Any = self._apps.list_namespaced_deployment(
             namespace=self._namespace,
@@ -417,16 +427,15 @@ def _drain(
 
     if rows > 0 or deployment.replicas > 0:
         if stamp:
-            kube.patch("deployment", deployment.name, {"metadata": {"annotations": {DRAINED_SINCE_ANNOTATION: None}}})
+            kube.mark(deployment.name, {"metadata": {"annotations": {DRAINED_SINCE_ANNOTATION: None}}})
             logger.info("Worker version is busy again; cleared drained marker", name=deployment.name)
         return entry
 
     drained_since = _parse_drained_since(stamp) if stamp else None
     if drained_since is None:
-        kube.patch(
-            "deployment",
+        kube.mark(
             deployment.name,
-            {"metadata": {"annotations": {DRAINED_SINCE_ANNOTATION: now.isoformat()}}},
+            {"metadata": {"annotations": {DRAINED_SINCE_ANNOTATION: _timestamp(now)}}},
         )
         logger.info("Worker version reached zero; marked drained", name=deployment.name, version=deployment.version)
         entry["phase"] = "Drained"
@@ -534,24 +543,31 @@ def reconcile_set(
     owner = _owner_reference(metadata)
     template_scaled_object = _apply_desired(kube, template, version, image, set_name, owner)
 
-    desired = version_status(version, "Current", image, 0, None)
-    draining: list[dict[str, Any]] = []
     db_available = True
+
+    def count(target_version: str) -> int | None:
+        nonlocal db_available
+        if not db_available:
+            return None
+        try:
+            return outstanding(target_version)
+        except Exception:
+            db_available = False
+            logger.warning("Cannot count outstanding workflows; deleting nothing this tick", exc_info=True)
+            return None
+
+    current_rows = count(version)
+    desired = version_status(version, "Current", image, 0, current_rows)
+    draining: list[dict[str, Any]] = []
     for deployment in kube.list_managed_deployments(settings.managed_by, settings.version_label, set_name):
         if deployment.version == version:
-            desired = version_status(version, "Current", deployment.image or image, deployment.replicas, None)
+            desired = version_status(version, "Current", deployment.image or image, deployment.replicas, current_rows)
             continue
         if not VERSION_PATTERN.match(deployment.version):
             logger.warning("Managed worker carries an unusable version label; leaving it alone", name=deployment.name)
             continue
 
-        rows: int | None = None
-        if db_available:
-            try:
-                rows = outstanding(deployment.version)
-            except Exception:
-                db_available = False
-                logger.warning("Cannot count outstanding workflows; deleting nothing this tick", exc_info=True)
+        rows = count(deployment.version)
 
         try:
             draining.append(
