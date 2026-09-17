@@ -330,7 +330,7 @@ def _own(manifest: dict[str, Any], set_name: str) -> dict[str, Any]:
     """
     metadata = manifest.setdefault("metadata", {})
     labels = metadata.get("labels") or {}
-    labels.setdefault(SET_LABEL, set_name)
+    labels[SET_LABEL] = set_name
     metadata["labels"] = labels
     return manifest
 
@@ -353,6 +353,7 @@ def _apply_desired(
     version: str,
     image: str,
     set_name: str,
+    existing_deployment: ManagedDeployment | None,
 ) -> dict[str, Any]:
     """Create or patch the three objects of the desired version; return the rendered ScaledObject.
 
@@ -360,6 +361,11 @@ def _apply_desired(
     ``kube.mark``, not ``kube.patch``: ``mark`` bypasses dry run the same way
     ``_drain`` writes the marker, so a rollback in dry run does not leave a
     stale marker that the next drain would read as already past grace.
+
+    ``mark`` is called only when ``existing_deployment`` still carries the
+    marker: at steady state the desired version never drained, so there is
+    nothing to clear and calling ``mark`` every tick would be a no-op write
+    (and a dry-run write when nothing was observed).
     """
     rendered: dict[Kind, dict[str, Any]] = {}
     for kind in KINDS:
@@ -369,7 +375,11 @@ def _apply_desired(
         if kube.exists(kind, name):
             kube.patch(kind, name, manifest)
             created = False
-            if kind == "deployment":
+            if (
+                kind == "deployment"
+                and existing_deployment
+                and existing_deployment.annotations.get(DRAINED_SINCE_ANNOTATION)
+            ):
                 kube.mark(name, {"metadata": {"annotations": {DRAINED_SINCE_ANNOTATION: None}}})
         else:
             kube.create(kind, manifest)
@@ -530,7 +540,9 @@ def reconcile_set(
         return
 
     grace_seconds = float(spec["graceSeconds"]) if spec.get("graceSeconds") is not None else settings.grace_seconds
-    template_scaled_object = _apply_desired(kube, template, version, image, set_name)
+    managed = kube.list_managed_deployments(settings.managed_by, settings.version_label, set_name)
+    existing_deployment = next((deployment for deployment in managed if deployment.version == version), None)
+    template_scaled_object = _apply_desired(kube, template, version, image, set_name, existing_deployment)
 
     db_available = True
     failed_drains: list[str] = []
@@ -549,7 +561,7 @@ def reconcile_set(
     current_rows = count(version)
     desired = version_status(version, "Current", image, 0, current_rows)
     draining: list[dict[str, Any]] = []
-    for deployment in kube.list_managed_deployments(settings.managed_by, settings.version_label, set_name):
+    for deployment in managed:
         if deployment.version == version:
             desired = version_status(version, "Current", deployment.image or image, deployment.replicas, current_rows)
             continue

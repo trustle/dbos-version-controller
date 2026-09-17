@@ -229,14 +229,29 @@ def test_created_objects_carry_the_set_label_and_no_owner_reference():
         assert "ownerReferences" not in manifest["metadata"]
 
 
+def test_the_set_label_cannot_be_overridden_by_the_template():
+    template = {
+        **TEMPLATE,
+        "deployment": DEPLOYMENT_TEMPLATE.replace(
+            "app.kubernetes.io/managed-by: dbos-version-controller",
+            f"app.kubernetes.io/managed-by: dbos-version-controller\n    {SET_LABEL}: other",
+        ),
+    }
+    kube = run(FakeKubeClient(sets=[worker_version_set(template=template)]))
+
+    deployment = next(manifest for kind, manifest in kube.created if kind == "deployment")
+    assert deployment["metadata"]["labels"][SET_LABEL] == SET_NAME
+
+
 def test_the_set_label_is_repeated_on_every_patch():
     existing = [(kind, f"dbos-worker-{DESIRED_VERSION}") for kind in ("deployment", "scaledobject", "pdb")]
     kube = run(FakeKubeClient(existing=existing))
 
-    for _, _, body in kube.patched:
+    manifest_patches = [body for _, _, body in kube.patched if "kind" in body]
+    assert len(manifest_patches) == 3
+    for body in manifest_patches:
         assert "ownerReferences" not in body["metadata"]
-        if "labels" in body["metadata"]:
-            assert body["metadata"]["labels"][SET_LABEL] == SET_NAME
+        assert body["metadata"]["labels"][SET_LABEL] == SET_NAME
 
 
 def test_patches_the_desired_version_when_the_image_changes():
@@ -623,7 +638,9 @@ def test_dry_run_still_writes_the_drained_marker_so_the_grace_clock_advances():
 
 def test_dry_run_clears_a_stale_marker_on_the_desired_deployment_via_mark():
     existing = [(kind, f"dbos-worker-{DESIRED_VERSION}") for kind in ("deployment", "scaledobject", "pdb")]
-    kube = FakeKubeClient(existing=existing, dry_run=True)
+    stale_stamp = (NOW - timedelta(hours=2)).isoformat()
+    managed = [managed_deployment(version=DESIRED_VERSION, annotations={DRAINED_SINCE_ANNOTATION: stale_stamp})]
+    kube = FakeKubeClient(existing=existing, managed=managed, dry_run=True)
 
     run(kube)
 
@@ -664,13 +681,25 @@ def test_patches_are_sent_as_json_merge_patches():
 
 def test_patching_the_desired_deployment_clears_any_stale_drained_marker():
     existing = [(kind, f"dbos-worker-{DESIRED_VERSION}") for kind in ("deployment", "scaledobject", "pdb")]
-    kube = run(FakeKubeClient(existing=existing))
+    stale_stamp = (NOW - timedelta(hours=2)).isoformat()
+    managed = [managed_deployment(version=DESIRED_VERSION, annotations={DRAINED_SINCE_ANNOTATION: stale_stamp})]
+    kube = run(FakeKubeClient(existing=existing, managed=managed))
 
     deployment_patches = kube.patches_for("deployment", f"dbos-worker-{DESIRED_VERSION}")
     assert deployment_patches[-1] == {"metadata": {"annotations": {DRAINED_SINCE_ANNOTATION: None}}}
 
     scaledobject_patch = kube.patches_for("scaledobject", f"dbos-worker-{DESIRED_VERSION}")[0]
     assert "annotations" not in scaledobject_patch.get("metadata", {})
+
+
+def test_no_mark_call_when_the_desired_deployment_has_no_marker():
+    existing = [(kind, f"dbos-worker-{DESIRED_VERSION}") for kind in ("deployment", "scaledobject", "pdb")]
+    managed = [managed_deployment(version=DESIRED_VERSION)]
+    kube = run(FakeKubeClient(existing=existing, managed=managed))
+
+    deployment_patches = kube.patches_for("deployment", f"dbos-worker-{DESIRED_VERSION}")
+    assert len(deployment_patches) == 1
+    assert "annotations" not in deployment_patches[0].get("metadata", {})
 
 
 class StatefulFakeKubeClient(FakeKubeClient):
