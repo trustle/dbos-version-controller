@@ -6,6 +6,10 @@ no work left.
 
 Status: built for the London service at Trustle and in rollout there. Private for now.
 
+Written in Go with kubebuilder v4 and controller-runtime. Version 0.3.0 replaced
+the original Python implementation. The `WorkerVersionSet` contract did not
+change, so an existing chart that renders the custom resource keeps working.
+
 ## The problem
 
 DBOS stamps every workflow row with the application version that started it. A
@@ -29,9 +33,9 @@ status.
 
 ## How it works
 
-Every `DVC_INTERVAL_SECONDS` the controller runs one reconcile tick. Each tick
-reconciles every `WorkerVersionSet` in `DVC_NAMESPACE`, one set at a time. A set
-that fails does not stop the sets after it.
+The controller watches every `WorkerVersionSet` in `DVC_NAMESPACE`. It
+reconciles one set per event, and requeues that set every
+`DVC_INTERVAL_SECONDS`. A set that fails does not stop the other sets.
 
 For one set:
 
@@ -58,7 +62,7 @@ For one set:
 
 ```mermaid
 flowchart TD
-    A[List WorkerVersionSets] --> B{spec valid?}
+    A[Reconcile one WorkerVersionSet] --> B{spec valid?}
     B -- no --> Z[Skip the set. Delete nothing. Ready=False/InvalidSpec.]
     B -- yes --> C[Render templates for the desired version]
     C --> D[Create or patch Deployment, ScaledObject, PDB]
@@ -81,7 +85,9 @@ flowchart TD
 
 The controller reads every `WorkerVersionSet` in `DVC_NAMESPACE`. It writes only
 their status subresource, never their spec. Install the definition from
-`crd/dbos.trustle.com_workerversionsets.yaml`.
+`crd/dbos.trustle.com_workerversionsets.yaml`. That file is the output of
+`make manifests`, copied to a stable path the Helm chart reads. Do not edit it
+by hand; edit `api/v1alpha1/workerversionset_types.go` and run `make manifests`.
 
 ```yaml
 apiVersion: dbos.trustle.com/v1alpha1
@@ -128,16 +134,16 @@ Rules for each template:
   version's Deployment, ScaledObject and PDB by one shared name. A name pattern
   such as `<prefix>-__VERSION__` is the usual choice, but the controller only
   reads the name the template produces.
-- Put `dbos-app-version: __VERSION__` and
-  `app.kubernetes.io/managed-by: dbos-version-controller` in the labels of all
-  three objects. The controller finds the versions it owns through these two
-  labels. Change the label names or the managed-by value with
-  `DVC_VERSION_LABEL` and `DVC_MANAGED_BY`.
-- The controller adds `dbos.trustle.com/worker-version-set: <set name>` to every
-  rendered object. Deleting a WorkerVersionSet does not delete its worker
-  objects. Deletion is always the controller's decision, gated on zero rows,
-  zero pods and the grace period. To retire an application, point
-  `spec.version` at the last version, let the others drain, then delete the
+- The controller forces three labels onto every rendered object:
+  `app.kubernetes.io/managed-by: <DVC_MANAGED_BY>`,
+  `<DVC_VERSION_LABEL>: <version>` and
+  `dbos.trustle.com/worker-version-set: <set name>`. It finds the versions it
+  owns through them, so a template cannot override them. Write them in the
+  template too, for a reader.
+- Deleting a WorkerVersionSet does not delete its worker objects. The rendered
+  objects carry no ownerReference. Deletion is always the controller's decision,
+  gated on zero rows, zero pods and the grace period. To retire an application,
+  point `spec.version` at the last version, let the others drain, then delete the
   remaining objects by label. A re-created set with the same name adopts its
   objects.
 - Set `DBOS_APPLICATION_VERSION` to `__VERSION__` in the worker container, so
@@ -194,39 +200,54 @@ dbos-worker   v20260916135248   registry.example.com/app:8332cd5   True    6d
 
 ## Configuration
 
-Every setting reads one environment variable with the `DVC_` prefix.
+Every setting reads one environment variable with the `DVC_` prefix. Each one
+also has a flag of the same name, and the environment variable wins over it.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `DVC_NAMESPACE` | required | Namespace holding the WorkerVersionSets and the worker objects. |
+| `DVC_NAMESPACE` | required | Namespace holding the WorkerVersionSets and the worker objects. The manager watches only this namespace. |
 | `DVC_DATABASE_URL` | required | URL of the DBOS system database. |
-| `DVC_INTERVAL_SECONDS` | `30` | Seconds between reconcile ticks. |
+| `DVC_INTERVAL_SECONDS` | `30` | Seconds between reconciles of one set. |
 | `DVC_GRACE_SECONDS` | `600` | Default seconds a drained version must stay idle before deletion. `spec.graceSeconds` overrides it. |
 | `DVC_DRY_RUN` | `false` | Log every write as `Would ...` and change nothing. |
 | `DVC_MANAGED_BY` | `dbos-version-controller` | Value of the `app.kubernetes.io/managed-by` label. |
 | `DVC_VERSION_LABEL` | `dbos-app-version` | Label carrying the application version. |
-| `DVC_LOG_LEVEL` | `INFO` | Level of the root logger. |
+| `DVC_LOG_LEVEL` | `info` | Level of the root logger. |
 
 The controller records the idle time in the annotation
 `dbos-version-controller/drained-since`.
 
+The image is distroless. It carries no shell, so every setting must arrive as an
+environment variable or a flag. A `secretKeyRef` is the way to pass the database
+URL.
+
 ## RBAC
 
-The controller needs one namespaced Role:
+`config/rbac/role.yaml` is generated from the markers on the reconciler, and is
+the source of truth:
 
 | API group | Resource | Verbs |
 | --- | --- | --- |
 | `dbos.trustle.com` | `workerversionsets` | get, list, watch |
-| `dbos.trustle.com` | `workerversionsets/status` | patch, update |
+| `dbos.trustle.com` | `workerversionsets/status` | get, patch, update |
 | `""` | `pods` | get, list |
 | `apps` | `deployments` | get, list, watch, create, patch, delete |
 | `policy` | `poddisruptionbudgets` | get, list, watch, create, patch, delete |
 | `keda.sh` | `scaledobjects` | get, list, watch, create, patch, delete |
 
-`examples/controller.yaml` holds the ServiceAccount, Role, RoleBinding and
-Deployment.
+`examples/controller.yaml` holds the same rules as one namespaced Role, next to
+a ServiceAccount, a RoleBinding and a Deployment.
 
 ## Install
+
+The kubebuilder layout under `config/` is the full install:
+
+```bash
+make install                                  # the CRD only
+make deploy IMG=registry.example.com/dbos-version-controller:0.3.0
+```
+
+The smaller namespaced alternative:
 
 ```bash
 kubectl apply -f crd/
@@ -249,41 +270,50 @@ its sets are namespaced.
   grace period rather than an immediate delete.
 - A failed drain logs, continues with the remaining versions, and reports
   `Ready=False`/`DrainFailed` naming the versions that failed. A failed set
-  logs and continues with the remaining sets.
+  logs and reports `ReconcileError` on its own status.
 - `DVC_DRY_RUN=true` performs no write to a worker object. Dry run writes two
   things: the WorkerVersionSet status and the drained-since marker annotation.
   Both record what the controller observed. It creates, patches and deletes
   nothing else.
-- Run exactly one replica. Two controllers reconciling the same set fight each
-  other. Use `strategy: Recreate`.
-- The controller never starts DBOS. It reads `dbos.workflow_status` with
-  psycopg, so a crashing worker version cannot take the controller down.
+- Run exactly one replica, or enable leader election. Two controllers
+  reconciling the same set fight each other. Use `strategy: Recreate`.
+- The controller never starts DBOS. It reads `dbos.workflow_status` over one
+  short pgx connection per reconcile, so a crashing worker version cannot take
+  the controller down.
 
 ## Run locally against a kubeconfig
 
-The controller loads in-cluster credentials first. It falls back to
-`load_kube_config`, so a local run uses your current kubeconfig context.
+`make run` builds the manager and runs it against your current kubeconfig
+context:
 
 ```bash
-uv sync
 export DVC_NAMESPACE=dbos-workers
 export DVC_DATABASE_URL="postgresql://user:pass@localhost:5432/dbos"
 export DVC_DRY_RUN=true
-uv run python -m dbos_version_controller
+make run
 ```
 
-Start with `DVC_DRY_RUN=true`. Read the `Would create`, `Would patch` and
-`Would delete` lines before you let the controller write.
+Start with `DVC_DRY_RUN=true`. Read the `Would create worker object`,
+`Would patch worker object` and `Would delete worker object` lines before you
+let the controller write.
 
 ## Development
 
 ```bash
-uv sync
-uv run ruff check .
-uv run ruff format --check .
-uv run pyright
-uv run pytest -q
+make manifests generate fmt vet   # regenerate the CRD, the RBAC and the deepcopy code
+make test                         # envtest suite, and coverage in cover.out
+make lint                         # golangci-lint
+make docker-build IMG=...         # the controller image
 ```
+
+`make test` runs against a real API server that `setup-envtest` downloads. The
+suite installs the generated CRD and the KEDA ScaledObject CRD from
+`test/crds/`, which is a copy of the ScaledObject document of KEDA 2.17.2. That
+copy is a test fixture, and the `.dockerignore` keeps it out of the image.
+
+`make manifests` also copies the generated CRD to
+`crd/dbos.trustle.com_workerversionsets.yaml`, because the Helm chart reads that
+path verbatim. Commit both copies.
 
 ## Roadmap
 

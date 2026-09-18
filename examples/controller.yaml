@@ -1,4 +1,9 @@
-# The controller itself: ServiceAccount, Role, RoleBinding and Deployment.
+# A namespaced install of the controller: ServiceAccount, Role, RoleBinding and Deployment.
+#
+# `make deploy` installs the kubebuilder layout under config/ instead, which is cluster-scoped and
+# carries the metrics service and the network policies. This file is the smaller alternative, and
+# the shape the Helm chart mirrors. The rules match config/rbac/role.yaml, narrowed to one
+# namespace.
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -17,7 +22,7 @@ rules:
     verbs: ["get", "list", "watch"]
   - apiGroups: ["dbos.trustle.com"]
     resources: ["workerversionsets/status"]
-    verbs: ["patch", "update"]
+    verbs: ["get", "patch", "update"]
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list"]
@@ -71,7 +76,9 @@ spec:
         runAsNonRoot: true
       containers:
         - name: controller
-          image: registry.example.com/dbos-version-controller:0.2.0
+          image: registry.example.com/dbos-version-controller:0.3.0
+          # The image is distroless. It carries no shell, so every setting arrives as an
+          # environment variable or a flag, never through a shell command.
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -91,6 +98,18 @@ spec:
                 secretKeyRef:
                   name: dbos-database
                   key: system-database-url
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 10
           resources:
             requests:
               cpu: 50m

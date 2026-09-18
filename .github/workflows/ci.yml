@@ -11,21 +11,34 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-go@v5
         with:
-          enable-cache: true
+          go-version-file: go.mod
+          cache: true
 
-      - name: Install dependencies
-        run: uv sync --locked
-
-      - name: Lint
-        run: uv run ruff check .
-
-      - name: Format
-        run: uv run ruff format --check .
-
-      - name: Type check
-        run: uv run pyright
+      - name: Vet
+        run: go vet ./...
 
       - name: Test
-        run: uv run pytest -q
+        run: make test
+
+      - name: Check the generated files are committed
+        run: |
+          git diff --exit-code -- config crd api || {
+            echo "Run 'make manifests generate' and commit the result." >&2
+            exit 1
+          }
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.13.1

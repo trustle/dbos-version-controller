@@ -1,175 +1,221 @@
-# The desired state of one DBOS application's worker versions.
-#
-# Git holds one WorkerVersionSet per application. The controller owns every
-# per-version Deployment, ScaledObject and PDB the set covers, and reports what
-# it found on .status.
+---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
   name: workerversionsets.dbos.trustle.com
 spec:
   group: dbos.trustle.com
-  scope: Namespaced
   names:
     kind: WorkerVersionSet
     listKind: WorkerVersionSetList
     plural: workerversionsets
-    singular: workerversionset
     shortNames:
-      - wvs
+    - wvs
+    singular: workerversionset
+  scope: Namespaced
   versions:
-    - name: v1alpha1
-      served: true
-      storage: true
-      subresources:
-        status: {}
-      additionalPrinterColumns:
-        - name: Version
-          type: string
-          jsonPath: .spec.version
-        - name: Image
-          type: string
-          jsonPath: .spec.image
-        - name: Ready
-          type: string
-          jsonPath: .status.conditions[?(@.type=="Ready")].status
-        - name: Age
-          type: date
-          jsonPath: .metadata.creationTimestamp
-      schema:
-        openAPIV3Schema:
-          type: object
-          description: One DBOS application's desired worker version and the manifests that render it.
-          properties:
-            spec:
-              type: object
-              required:
-                - version
-                - image
-                - template
-              properties:
-                version:
-                  type: string
-                  description: >-
-                    The desired DBOS application version. The pattern admits no quote character,
-                    because the version is inlined into a KEDA query string.
-                  pattern: '^[a-z0-9][a-z0-9.-]{0,48}$'
-                image:
-                  type: string
-                  description: The worker image the desired version runs.
-                  pattern: '^[A-Za-z0-9./:_@-]+$'
-                graceSeconds:
-                  type: integer
-                  minimum: 0
-                  description: >-
-                    Seconds a drained version stays at zero rows and zero pods before it is
-                    deleted. Defaults to the controller's DVC_GRACE_SECONDS.
-                template:
-                  type: object
-                  description: >-
-                    The three manifests, each a YAML string carrying the literal __VERSION__ and
-                    __IMAGE__ placeholders. All three must share one metadata.name.
-                  required:
-                    - deployment
-                    - scaledObject
-                    - podDisruptionBudget
+  - additionalPrinterColumns:
+    - jsonPath: .spec.version
+      name: Version
+      type: string
+    - jsonPath: .spec.image
+      name: Image
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: WorkerVersionSet is the Schema for the workerversionsets API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of WorkerVersionSet
+            properties:
+              graceSeconds:
+                description: |-
+                  graceSeconds is the number of seconds a drained version stays at zero rows and zero pods
+                  before it is deleted. Defaults to the controller's DVC_GRACE_SECONDS.
+                minimum: 0
+                type: integer
+              image:
+                description: image is the worker image the desired version runs.
+                pattern: ^[A-Za-z0-9./:_@-]+$
+                type: string
+              template:
+                description: |-
+                  template holds the three manifests, each a YAML string carrying the literal __VERSION__ and
+                  __IMAGE__ placeholders. All three must share one metadata.name.
+                properties:
+                  deployment:
+                    description: deployment is the worker Deployment manifest.
+                    type: string
+                  podDisruptionBudget:
+                    description: podDisruptionBudget is the PodDisruptionBudget manifest.
+                    type: string
+                  scaledObject:
+                    description: scaledObject is the KEDA ScaledObject manifest. Its
+                      first trigger seeds the drain trigger.
+                    type: string
+                required:
+                - deployment
+                - podDisruptionBudget
+                - scaledObject
+                type: object
+              version:
+                description: |-
+                  version is the desired DBOS application version. The pattern admits no quote character,
+                  because the version is inlined into a KEDA query string.
+                pattern: ^[a-z0-9][a-z0-9.-]{0,48}$
+                type: string
+            required:
+            - image
+            - template
+            - version
+            type: object
+          status:
+            description: status defines the observed state of WorkerVersionSet
+            properties:
+              conditions:
+                description: conditions holds the Ready condition of the last reconcile.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
                   properties:
-                    deployment:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
                       type: string
-                      description: The worker Deployment manifest.
-                    scaledObject:
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
                       type: string
-                      description: The KEDA ScaledObject manifest. Its first trigger seeds the drain trigger.
-                    podDisruptionBudget:
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
                       type: string
-                      description: The PodDisruptionBudget manifest.
-            status:
-              type: object
-              description: What the controller saw on its last reconcile of this set.
-              properties:
-                observedGeneration:
-                  type: integer
-                  format: int64
-                  description: The .metadata.generation the last reconcile read.
-                lastReconcileTime:
-                  type: string
-                  format: date-time
-                  description: When the controller last reconciled this set.
-                versions:
-                  type: array
-                  description: One entry per live version of this set, the desired version first.
-                  items:
-                    type: object
-                    required:
-                      - version
-                      - phase
-                    properties:
-                      version:
-                        type: string
-                        description: The DBOS application version.
-                      phase:
-                        type: string
-                        description: >-
-                          Current is the desired version. Draining is an old version KEDA holds at
-                          zero. Drained is an old version at zero rows and zero pods, serving its
-                          grace period.
-                        enum:
-                          - Current
-                          - Draining
-                          - Drained
-                      image:
-                        type: string
-                        description: The image of the version's first worker container.
-                      outstanding:
-                        type: integer
-                        format: int64
-                        description: >-
-                          ENQUEUED plus PENDING workflow rows of this version. Absent when the
-                          database was unreachable.
-                      replicas:
-                        type: integer
-                        format: int32
-                        description: The Deployment's .status.replicas.
-                      drainedSince:
-                        type: string
-                        format: date-time
-                        description: When the version reached zero. Present only while Drained.
-                conditions:
-                  type: array
-                  description: The Ready condition of the last reconcile.
-                  items:
-                    type: object
-                    required:
-                      - type
-                      - status
-                      - reason
-                      - lastTransitionTime
-                    properties:
-                      type:
-                        type: string
-                        maxLength: 316
-                        pattern: '^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$'
-                      status:
-                        type: string
-                        enum:
-                          - "True"
-                          - "False"
-                          - Unknown
-                      reason:
-                        type: string
-                        minLength: 1
-                        maxLength: 1024
-                        pattern: '^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$'
-                      message:
-                        type: string
-                        maxLength: 32768
-                      observedGeneration:
-                        type: integer
-                        format: int64
-                        minimum: 0
-                      lastTransitionTime:
-                        type: string
-                        format: date-time
-                  x-kubernetes-list-type: map
-                  x-kubernetes-list-map-keys:
-                    - type
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              lastReconcileTime:
+                description: lastReconcileTime is when the controller last reconciled
+                  this set.
+                format: date-time
+                type: string
+              observedGeneration:
+                description: observedGeneration is the .metadata.generation the last
+                  reconcile read.
+                format: int64
+                type: integer
+              versions:
+                description: versions holds one entry per live version of this set,
+                  the desired version first.
+                items:
+                  description: VersionStatus is what the controller saw of one live
+                    version.
+                  properties:
+                    drainedSince:
+                      description: drainedSince is when the version reached zero.
+                        Present only while Drained.
+                      format: date-time
+                      type: string
+                    image:
+                      description: image is the image of the version's first worker
+                        container.
+                      type: string
+                    outstanding:
+                      description: |-
+                        outstanding is the count of ENQUEUED plus PENDING workflow rows of this version. Absent when
+                        the database was unreachable.
+                      format: int64
+                      type: integer
+                    phase:
+                      description: |-
+                        phase is Current for the desired version. Draining is an old version KEDA holds at
+                        zero. Drained is an old version at zero rows and zero pods, serving its grace period.
+                      enum:
+                      - Current
+                      - Draining
+                      - Drained
+                      type: string
+                    replicas:
+                      description: replicas is the Deployment's .status.replicas.
+                      format: int32
+                      type: integer
+                    version:
+                      description: version is the DBOS application version.
+                      type: string
+                  required:
+                  - phase
+                  - version
+                  type: object
+                type: array
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

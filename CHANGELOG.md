@@ -3,6 +3,16 @@
 All notable changes to this project are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.3.0 — Rewritten in Go with kubebuilder; CRD contract unchanged
+
+- The controller is a Go kubebuilder v4 / controller-runtime manager. The Python package, its tests and its uv packaging are gone.
+- The `dbos.trustle.com/v1alpha1` `WorkerVersionSet` contract is unchanged: same group, kind, short name, fields, validation patterns, printer columns and status shape. A chart that renders the custom resource keeps working. The CRD is now generated from `api/v1alpha1/workerversionset_types.go`, and `make manifests` copies it to the stable path `crd/dbos.trustle.com_workerversionsets.yaml`.
+- The timer loop became a controller-runtime reconcile: one set per event, requeued every `DVC_INTERVAL_SECONDS`. The manager watches only `DVC_NAMESPACE`.
+- The settings keep their `DVC_` names. Each one also has a flag; the environment variable wins.
+- The controller now assigns the managed-by and version labels to every rendered object, as it already did for the set label. A template can no longer render an object the controller cannot find again.
+- The image is distroless and carries no shell. A deployment that configured the container through a shell command must move to a `secretKeyRef` or an init container.
+- The tests run against a real API server through envtest, with the KEDA ScaledObject CRD installed from `test/crds/`.
+
 ## 0.2.0 — WorkerVersionSet CRD replaces the desired/template ConfigMaps
 
 - New `dbos.trustle.com/v1alpha1` `WorkerVersionSet` (short name `wvs`): one custom resource holds the desired version, the image, the optional grace period and the three manifest templates.
