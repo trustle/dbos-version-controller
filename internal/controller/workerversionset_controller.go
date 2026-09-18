@@ -80,10 +80,9 @@ type managedDeployment struct {
 
 // +kubebuilder:rbac:groups=dbos.trustle.com,resources=workerversionsets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=dbos.trustle.com,resources=workerversionsets/status,verbs=get;patch;update
-// +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;patch;delete
-// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;patch;delete
-// +kubebuilder:rbac:groups=keda.sh,resources=scaledobjects,verbs=get;list;watch;create;patch;delete
+// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;create;patch;delete
+// +kubebuilder:rbac:groups=keda.sh,resources=scaledobjects,verbs=get;create;patch;delete
 
 // Reconcile brings one WorkerVersionSet's worker objects to their desired state and patches its
 // status. A set that fails is reported on its own status and reconciled again next interval.
@@ -223,6 +222,10 @@ func (r *WorkerVersionSetReconciler) reconcileSet(
 // mark is called only when the existing Deployment still carries the marker: at steady state the
 // desired version never drained, so there is nothing to clear and calling mark every tick would
 // be a no-op write (and a dry-run write when nothing was observed).
+//
+// An existing Deployment is patched without spec.replicas, because KEDA owns the replica count of
+// a live version: patching the template's own count back every interval would undo every scale
+// decision. The count is kept on create, where it is the starting size.
 func (r *WorkerVersionSetReconciler) applyDesired(
 	ctx context.Context,
 	set *dbosv1alpha1.WorkerVersionSet,
@@ -250,7 +253,7 @@ func (r *WorkerVersionSetReconciler) applyDesired(
 
 		created := false
 		if found {
-			if err := r.patch(ctx, kind, name, manifest.Object); err != nil {
+			if err := r.patch(ctx, kind, name, patchBody(manifest, kind)); err != nil {
 				return nil, err
 			}
 			if kind == kindDeployment && existing != nil && existing.Annotations[DrainedSinceAnnotation] != "" {

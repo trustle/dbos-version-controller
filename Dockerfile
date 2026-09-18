@@ -3,7 +3,9 @@
 # This Dockerfile must also build under the legacy docker builder that Google Cloud Build's
 # gcr.io/cloud-builders/docker step uses. So it carries no BuildKit-only syntax: no RUN --mount
 # cache, and no --platform=$BUILDPLATFORM. The binary is built for the host platform.
-FROM golang:1.27 AS builder
+# The legacy builder reads an ARG before the first FROM, so the base image stays overridable.
+ARG BASE_IMAGE=golang:1.27
+FROM ${BASE_IMAGE} AS builder
 
 WORKDIR /workspace
 

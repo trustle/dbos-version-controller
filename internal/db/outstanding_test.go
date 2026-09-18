@@ -50,3 +50,39 @@ func TestExistingTimeoutsAreLeftAlone(t *testing.T) {
 		t.Fatalf("the connect timeout is %v", config.ConnectTimeout)
 	}
 }
+
+func TestAKeywordValueConnectionStringSurvivesTheDriverParser(t *testing.T) {
+	dsn := withTimeouts("host=pg port=5432 user=dbos dbname=dbos")
+
+	config, err := pgconn.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("parse the DSN %q: %v", dsn, err)
+	}
+	if config.Host != "pg" {
+		t.Fatalf("the host is %q", config.Host)
+	}
+	if config.User != "dbos" {
+		t.Fatalf("the user is %q", config.User)
+	}
+	if got := config.RuntimeParams["options"]; got != "-c statement_timeout=10000" {
+		t.Fatalf("the options runtime parameter is %q", got)
+	}
+	if config.ConnectTimeout.Seconds() != 10 {
+		t.Fatalf("the connect timeout is %v", config.ConnectTimeout)
+	}
+}
+
+func TestExistingKeywordValueTimeoutsAreLeftAlone(t *testing.T) {
+	dsn := withTimeouts("host=pg user=dbos connect_timeout=3 options='-c statement_timeout=1'")
+
+	config, err := pgconn.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("parse the DSN %q: %v", dsn, err)
+	}
+	if got := config.RuntimeParams["options"]; got != "-c statement_timeout=1" {
+		t.Fatalf("the options runtime parameter is %q", got)
+	}
+	if config.ConnectTimeout.Seconds() != 3 {
+		t.Fatalf("the connect timeout is %v", config.ConnectTimeout)
+	}
+}

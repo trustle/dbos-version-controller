@@ -58,9 +58,17 @@ func NewOutstandingCounter(databaseURL, query string) func(ctx context.Context, 
 	}
 }
 
-// withTimeouts adds a connect timeout and a statement timeout to a database URL, leaving any the
-// caller already set alone.
+// withTimeouts adds a connect timeout and a statement timeout to a connection string, leaving any
+// the caller already set alone.
+//
+// libpq reads two connection-string forms, and url.Parse accepts the keyword/value one
+// ("host=pg port=5432 user=dbos") without an error and then rewrites it into something no driver
+// can read. So only a string carrying a scheme takes the URL path.
 func withTimeouts(databaseURL string) string {
+	if !strings.Contains(databaseURL, "://") {
+		return withKeywordTimeouts(databaseURL)
+	}
+
 	parsed, err := url.Parse(databaseURL)
 	if err != nil {
 		return databaseURL
@@ -77,4 +85,19 @@ func withTimeouts(databaseURL string) string {
 	// would carry "+statement_timeout" as a parameter name.
 	parsed.RawQuery = strings.ReplaceAll(values.Encode(), "+", "%20")
 	return parsed.String()
+}
+
+// withKeywordTimeouts adds the two timeouts to a libpq keyword/value connection string, leaving
+// any the caller already set alone.
+//
+// The statement timeout is single-quoted, the way libpq writes a value holding a space.
+func withKeywordTimeouts(databaseURL string) string {
+	settings := databaseURL
+	if !strings.Contains(settings, "connect_timeout=") {
+		settings += fmt.Sprintf(" connect_timeout=%d", int(queryTimeout.Seconds()))
+	}
+	if !strings.Contains(settings, "options=") {
+		settings += fmt.Sprintf(" options='-c statement_timeout=%d'", queryTimeout.Milliseconds())
+	}
+	return settings
 }

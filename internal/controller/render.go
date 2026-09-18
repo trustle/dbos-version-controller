@@ -126,6 +126,10 @@ func render(template, version, image string) (*unstructured.Unstructured, error)
 // WorkerVersionSet (Argo prune/recreate, kubectl replace --force) must not garbage-collect a
 // draining Deployment with work in flight. Deletion stays the controller's own decision. A set
 // re-created with the same name adopts its existing objects by label.
+//
+// A Deployment carries the version label and the managed-by label on its pod template too: the
+// cleanup job and the KEDA queries select pods, not Deployments. spec.selector is left alone,
+// because it is immutable on a live Deployment.
 func stamp(manifest *unstructured.Unstructured, setName, managedBy, versionLabel, version string) {
 	labels := manifest.GetLabels()
 	if labels == nil {
@@ -135,6 +139,41 @@ func stamp(manifest *unstructured.Unstructured, setName, managedBy, versionLabel
 	labels[versionLabel] = version
 	labels[SetLabel] = setName
 	manifest.SetLabels(labels)
+
+	if manifest.GetKind() != "Deployment" {
+		return
+	}
+	podLabels, _, err := unstructured.NestedStringMap(manifest.Object, podLabelPath...)
+	if err != nil || podLabels == nil {
+		podLabels = map[string]string{}
+	}
+	podLabels[ManagedByLabel] = managedBy
+	podLabels[versionLabel] = version
+	if err := unstructured.SetNestedStringMap(manifest.Object, podLabels, podLabelPath...); err != nil {
+		// The only failure is a pod template that is not an object, which the API server rejects
+		// on its own with a clearer message than this function could give.
+		return
+	}
+}
+
+// metadataField is the object-meta key of a nested field path.
+const metadataField = "metadata"
+
+// podLabelPath locates the pod template labels of a Deployment.
+var podLabelPath = []string{"spec", "template", metadataField, "labels"}
+
+// patchBody returns the manifest to send as the patch of an object that already exists.
+//
+// A live Deployment keeps the replica count it has: KEDA owns that count, and re-sending the
+// template's own count every interval would undo every scale decision. The count stays on create,
+// where it is the version's starting size. Every other kind is patched whole.
+func patchBody(manifest *unstructured.Unstructured, kind workerKind) map[string]any {
+	if kind != kindDeployment {
+		return manifest.Object
+	}
+	trimmed := manifest.DeepCopy()
+	unstructured.RemoveNestedField(trimmed.Object, "spec", "replicas")
+	return trimmed.Object
 }
 
 // drainPatch builds the ScaledObject patch that parks a draining version.

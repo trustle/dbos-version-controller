@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/utils/ptr"
 
 	dbosv1alpha1 "github.com/trustle/dbos-version-controller/api/v1alpha1"
 	"github.com/trustle/dbos-version-controller/internal/config"
@@ -140,6 +141,69 @@ func TestPatchesTheDesiredVersionWhenTheImageChanges(t *testing.T) {
 	containers := f.deployment(workerName(desiredVersion)).Spec.Template.Spec.Containers
 	if containers[0].Image != "registry.example.com/app:deadbee" {
 		t.Fatalf("the worker still runs %q", containers[0].Image)
+	}
+}
+
+func TestPatchingTheDesiredVersionLeavesTheReplicaCountAlone(t *testing.T) {
+	f := newFixture(t)
+	f.createSet(setName, desiredVersion)
+	f.reconcile(setName)
+
+	name := workerName(desiredVersion)
+	scaled := f.deployment(name)
+	replicas := int32(3)
+	scaled.Spec.Replicas = &replicas
+	if err := k8sClient.Update(f.ctx, scaled); err != nil {
+		t.Fatalf("scale the worker Deployment: %v", err)
+	}
+
+	f.reconcile(setName)
+
+	found := f.deployment(name).Spec.Replicas
+	if found == nil || *found != replicas {
+		t.Fatalf("the reconcile reset the replica count to %v; KEDA owns it", ptr.Deref(found, 0))
+	}
+}
+
+func TestTheDeploymentPodTemplateCarriesTheVersionAndManagedByLabels(t *testing.T) {
+	f := newFixture(t)
+	f.createSet(setName, desiredVersion)
+
+	f.reconcile(setName)
+
+	deployment := f.deployment(workerName(desiredVersion))
+	podLabels := deployment.Spec.Template.Labels
+	if podLabels[config.DefaultVersionLabel] != desiredVersion {
+		t.Fatalf("the pods carry version label %q", podLabels[config.DefaultVersionLabel])
+	}
+	if podLabels[ManagedByLabel] != config.DefaultManagedBy {
+		t.Fatalf("the pods carry managed-by %q", podLabels[ManagedByLabel])
+	}
+	selector := deployment.Spec.Selector.MatchLabels
+	if _, found := selector[ManagedByLabel]; found {
+		t.Fatalf("stamp wrote the managed-by label into the immutable selector: %v", selector)
+	}
+}
+
+func TestStampAddsThePodLabelsToATemplateThatHasNone(t *testing.T) {
+	manifest, err := render(strings.Replace(deploymentTemplate, `
+    metadata:
+      labels:
+        app.kubernetes.io/name: dbos-worker
+        dbos-app-version: __VERSION__
+`, "\n", 1), desiredVersion, desiredImage)
+	if err != nil {
+		t.Fatalf("render the Deployment: %v", err)
+	}
+
+	stamp(manifest, setName, config.DefaultManagedBy, config.DefaultVersionLabel, desiredVersion)
+
+	podLabels, found, err := unstructured.NestedStringMap(manifest.Object, podLabelPath...)
+	if err != nil || !found {
+		t.Fatalf("the pod template carries no labels: %v", err)
+	}
+	if podLabels[config.DefaultVersionLabel] != desiredVersion || podLabels[ManagedByLabel] != config.DefaultManagedBy {
+		t.Fatalf("the pod labels are %v", podLabels)
 	}
 }
 

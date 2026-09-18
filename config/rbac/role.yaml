@@ -5,13 +5,6 @@ metadata:
   name: manager-role
 rules:
 - apiGroups:
-  - ""
-  resources:
-  - pods
-  verbs:
-  - get
-  - list
-- apiGroups:
   - apps
   resources:
   - deployments
@@ -46,9 +39,7 @@ rules:
   - create
   - delete
   - get
-  - list
   - patch
-  - watch
 - apiGroups:
   - policy
   resources:
@@ -57,6 +48,4 @@ rules:
   - create
   - delete
   - get
-  - list
   - patch
-  - watch

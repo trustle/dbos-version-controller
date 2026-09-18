@@ -200,19 +200,24 @@ dbos-worker   v20260916135248   registry.example.com/app:8332cd5   True    6d
 
 ## Configuration
 
-Every setting reads one environment variable with the `DVC_` prefix. Each one
-also has a flag of the same name, and the environment variable wins over it.
+Every setting reads one environment variable with the `DVC_` prefix. Each setting
+also has a flag, and the environment variable wins over the flag. The flag name
+is not always the variable name.
 
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `DVC_NAMESPACE` | required | Namespace holding the WorkerVersionSets and the worker objects. The manager watches only this namespace. |
-| `DVC_DATABASE_URL` | required | URL of the DBOS system database. |
-| `DVC_INTERVAL_SECONDS` | `30` | Seconds between reconciles of one set. |
-| `DVC_GRACE_SECONDS` | `600` | Default seconds a drained version must stay idle before deletion. `spec.graceSeconds` overrides it. |
-| `DVC_DRY_RUN` | `false` | Log every write as `Would ...` and change nothing. |
-| `DVC_MANAGED_BY` | `dbos-version-controller` | Value of the `app.kubernetes.io/managed-by` label. |
-| `DVC_VERSION_LABEL` | `dbos-app-version` | Label carrying the application version. |
-| `DVC_LOG_LEVEL` | `info` | Level of the root logger. |
+| Variable | Flag | Default | Meaning |
+| --- | --- | --- | --- |
+| `DVC_NAMESPACE` | `--namespace` | required | Namespace holding the WorkerVersionSets and the worker objects. The manager watches only this namespace. |
+| `DVC_DATABASE_URL` | `--database-url` | required | URL of the DBOS system database. |
+| `DVC_INTERVAL_SECONDS` | `--interval` | `30` | Time between reconciles of one set. |
+| `DVC_GRACE_SECONDS` | `--grace` | `600` | Default time a drained version must stay idle before deletion. `spec.graceSeconds` overrides it. |
+| `DVC_DRY_RUN` | `--dry-run` | `false` | Log every write as `Would ...` and change nothing. |
+| `DVC_MANAGED_BY` | `--managed-by` | `dbos-version-controller` | Value of the `app.kubernetes.io/managed-by` label. |
+| `DVC_VERSION_LABEL` | `--version-label` | `dbos-app-version` | Label carrying the application version. |
+| `DVC_LOG_LEVEL` | `--log-level` | `info` | Level of the root logger. |
+
+The two duration settings take different units. `DVC_INTERVAL_SECONDS` and
+`DVC_GRACE_SECONDS` take a plain number of seconds. `--interval` and `--grace`
+take a Go duration, such as `30s` or `10m`.
 
 The controller records the idle time in the annotation
 `dbos-version-controller/drained-since`.
@@ -230,10 +235,9 @@ the source of truth:
 | --- | --- | --- |
 | `dbos.trustle.com` | `workerversionsets` | get, list, watch |
 | `dbos.trustle.com` | `workerversionsets/status` | get, patch, update |
-| `""` | `pods` | get, list |
 | `apps` | `deployments` | get, list, watch, create, patch, delete |
-| `policy` | `poddisruptionbudgets` | get, list, watch, create, patch, delete |
-| `keda.sh` | `scaledobjects` | get, list, watch, create, patch, delete |
+| `policy` | `poddisruptionbudgets` | get, create, patch, delete |
+| `keda.sh` | `scaledobjects` | get, create, patch, delete |
 
 `examples/controller.yaml` holds the same rules as one namespaced Role, next to
 a ServiceAccount, a RoleBinding and a Deployment.
