@@ -45,8 +45,10 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	dbosv1alpha1 "github.com/trustle/dbos-version-controller/api/v1alpha1"
 	"github.com/trustle/dbos-version-controller/internal/config"
@@ -578,7 +580,7 @@ func (r *WorkerVersionSetReconciler) now() time.Time {
 // SetupWithManager sets up the controller with the Manager.
 func (r *WorkerVersionSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&dbosv1alpha1.WorkerVersionSet{}).
+		For(&dbosv1alpha1.WorkerVersionSet{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Named("workerversionset").
 		Complete(r)
 }
