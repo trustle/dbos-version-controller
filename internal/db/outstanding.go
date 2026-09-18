@@ -22,6 +22,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 
 	// Register the pgx driver under the name "pgx".
@@ -71,6 +72,9 @@ func withTimeouts(databaseURL string) string {
 	if values.Get("options") == "" {
 		values.Set("options", fmt.Sprintf("-c statement_timeout=%d", queryTimeout.Milliseconds()))
 	}
-	parsed.RawQuery = values.Encode()
+	// Encode writes a space as "+", but pgx decodes a URI query value the way libpq does: percent
+	// escapes only. A "+" would reach the server inside the options string, and the startup packet
+	// would carry "+statement_timeout" as a parameter name.
+	parsed.RawQuery = strings.ReplaceAll(values.Encode(), "+", "%20")
 	return parsed.String()
 }
