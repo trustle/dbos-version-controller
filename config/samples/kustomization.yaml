@@ -1,0 +1,4 @@
+## Append samples of your project ##
+resources:
+- dbos_v1alpha1_workerversionset.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

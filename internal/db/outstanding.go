@@ -1,0 +1,103 @@
+/*
+Copyright 2026 Trustle, Inc..
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+// Package db counts the unfinished workflows of one DBOS application version.
+package db
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"net/url"
+	"strings"
+	"time"
+
+	// Register the pgx driver under the name "pgx".
+	_ "github.com/jackc/pgx/v5/stdlib"
+)
+
+// queryTimeout bounds both the connection attempt and the statement.
+const queryTimeout = 10 * time.Second
+
+// NewOutstandingCounter returns a function counting the unfinished workflows of one application
+// version.
+//
+// Each call opens one short connection and closes it again. The controller never starts DBOS, so
+// a crashing worker version cannot take the controller down with it.
+func NewOutstandingCounter(databaseURL, query string) func(ctx context.Context, version string) (int64, error) {
+	dsn := withTimeouts(databaseURL)
+
+	return func(ctx context.Context, version string) (int64, error) {
+		ctx, cancel := context.WithTimeout(ctx, queryTimeout)
+		defer cancel()
+
+		database, err := sql.Open("pgx", dsn)
+		if err != nil {
+			return 0, fmt.Errorf("open the DBOS system database: %w", err)
+		}
+		defer func() { _ = database.Close() }()
+
+		var count int64
+		if err := database.QueryRowContext(ctx, query, version).Scan(&count); err != nil {
+			return 0, fmt.Errorf("count outstanding workflows of %s: %w", version, err)
+		}
+		return count, nil
+	}
+}
+
+// withTimeouts adds a connect timeout and a statement timeout to a connection string, leaving any
+// the caller already set alone.
+//
+// libpq reads two connection-string forms, and url.Parse accepts the keyword/value one
+// ("host=pg port=5432 user=dbos") without an error and then rewrites it into something no driver
+// can read. So only a string carrying a scheme takes the URL path.
+func withTimeouts(databaseURL string) string {
+	if !strings.Contains(databaseURL, "://") {
+		return withKeywordTimeouts(databaseURL)
+	}
+
+	parsed, err := url.Parse(databaseURL)
+	if err != nil {
+		return databaseURL
+	}
+	values := parsed.Query()
+	if values.Get("connect_timeout") == "" {
+		values.Set("connect_timeout", fmt.Sprintf("%d", int(queryTimeout.Seconds())))
+	}
+	if values.Get("options") == "" {
+		values.Set("options", fmt.Sprintf("-c statement_timeout=%d", queryTimeout.Milliseconds()))
+	}
+	// Encode writes a space as "+", but pgx decodes a URI query value the way libpq does: percent
+	// escapes only. A "+" would reach the server inside the options string, and the startup packet
+	// would carry "+statement_timeout" as a parameter name.
+	parsed.RawQuery = strings.ReplaceAll(values.Encode(), "+", "%20")
+	return parsed.String()
+}
+
+// withKeywordTimeouts adds the two timeouts to a libpq keyword/value connection string, leaving
+// any the caller already set alone.
+//
+// The statement timeout is single-quoted, the way libpq writes a value holding a space.
+func withKeywordTimeouts(databaseURL string) string {
+	settings := databaseURL
+	if !strings.Contains(settings, "connect_timeout=") {
+		settings += fmt.Sprintf(" connect_timeout=%d", int(queryTimeout.Seconds()))
+	}
+	if !strings.Contains(settings, "options=") {
+		settings += fmt.Sprintf(" options='-c statement_timeout=%d'", queryTimeout.Milliseconds())
+	}
+	return settings
+}

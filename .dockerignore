@@ -1,13 +1,11 @@
+# Keep build and test artifacts out of the image.
 .git
 .github
-.venv
-__pycache__
-*.py[cod]
-.pytest_cache
-.ruff_cache
-.coverage
-htmlcov
+bin
+cover.out
+config
+crd
 examples
-docs
+test/crds
 *.md
 !README.md

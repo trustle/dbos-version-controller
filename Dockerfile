@@ -1,37 +1,29 @@
-FROM ghcr.io/astral-sh/uv:0.11.3 AS uv
+# Build the manager binary.
+#
+# This Dockerfile must also build under the legacy docker builder that Google Cloud Build's
+# gcr.io/cloud-builders/docker step uses. So it carries no BuildKit-only syntax: no RUN --mount
+# cache, and no --platform=$BUILDPLATFORM. The binary is built for the host platform.
+# The legacy builder reads an ARG before the first FROM, so the base image stays overridable.
+ARG BASE_IMAGE=golang:1.27
+FROM ${BASE_IMAGE} AS builder
 
-FROM python:3.13-slim AS build
+WORKDIR /workspace
 
-COPY --from=uv /uv /uvx /bin/
+# Copy the Go module manifests first, so a source change does not re-download the dependencies.
+COPY go.mod go.mod
+COPY go.sum go.sum
+RUN go mod download
 
-# Compile bytecode at build time so the container does not pay it on cold start.
-ENV UV_COMPILE_BYTECODE=1
+# Copy the Go source. .dockerignore filters what does not belong in the image.
+COPY . .
 
-WORKDIR /app
+RUN CGO_ENABLED=0 GOOS=linux go build -a -o manager cmd/main.go
 
-COPY pyproject.toml uv.lock README.md ./
-COPY src/ ./src/
+# Distroless keeps the image to the binary and its certificates. It carries no shell, so the
+# container reads its settings from DVC_ environment variables and nothing else.
+FROM gcr.io/distroless/static:nonroot
+WORKDIR /
+COPY --from=builder /workspace/manager .
+USER 65532:65532
 
-# --no-dev: skip development dependencies for a smaller image.
-# --frozen: use the exact versions in the lock file, with no re-resolution.
-# No BuildKit cache mount: the image must also build under the legacy builder
-# that Google Cloud Build's docker step uses.
-RUN uv sync --frozen --no-dev --no-cache
-
-FROM python:3.13-slim
-
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-ARG UGID=1000
-RUN useradd -m -u ${UGID} controller
-
-WORKDIR /app
-COPY --from=build --chown=${UGID}:${UGID} /app /app
-
-USER ${UGID}
-
-ENV PYTHONUNBUFFERED=1
-ENV PATH="/app/.venv/bin:$PATH"
-
-ENTRYPOINT ["dbos-version-controller"]
+ENTRYPOINT ["/manager"]
