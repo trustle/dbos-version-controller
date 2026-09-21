@@ -1,0 +1,30 @@
+name: E2E
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    # The suite builds the image, starts a Postgres and waits out a grace period. It is slower
+    # than the unit job, so it is bounded rather than left to the six-hour default.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # make test-e2e creates the kind cluster itself, with the kind version pinned in the
+      # Makefile, so a local run and this job use the same one.
+      - name: Run the e2e suite on kind
+        run: make test-e2e

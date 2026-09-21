@@ -306,6 +306,7 @@ let the controller write.
 ```bash
 make manifests generate fmt vet   # regenerate the CRD, the RBAC and the deepcopy code
 make test                         # envtest suite, and coverage in cover.out
+make test-e2e                     # end-to-end suite, against a kind cluster
 make lint                         # golangci-lint
 make docker-build IMG=...         # the controller image
 ```
@@ -314,6 +315,27 @@ make docker-build IMG=...         # the controller image
 suite installs the generated CRD and the KEDA ScaledObject CRD from
 `test/crds/`, which is a copy of the ScaledObject document of KEDA 2.17.2. That
 copy is a test fixture, and the `.dockerignore` keeps it out of the image.
+
+### The end-to-end suite
+
+`make test-e2e` runs `test/e2e` against a real cluster. It needs Docker and
+nothing else: the target downloads `kind`, creates a cluster, and deletes it
+again when the suite ends, whether the suite passed or failed. `make test`
+excludes this package, because it needs that cluster.
+
+The suite covers what envtest cannot. It builds the image from the Dockerfile
+and loads it into the node, deploys `config/default`, and points the controller
+at a Postgres carrying `dbos.workflow_status`. It then drives one
+WorkerVersionSet through a version change, and asserts the three gates in
+order: the old version is parked at `minReplicaCount: 0` on its own query, it
+survives while it still holds a row, and its three objects are deleted once the
+row is gone and its pods are at zero.
+
+It installs the KEDA ScaledObject definition, not KEDA. The controller writes
+ScaledObjects and never reads what KEDA does with them, so where the suite
+needs the effect of KEDA scaling a parked version to zero, it scales the
+Deployment itself. The GitHub Actions job in `.github/workflows/e2e.yml` runs
+the same `make test-e2e` on every pull request.
 
 `make manifests` also copies the generated CRD to
 `crd/dbos.trustle.com_workerversionsets.yaml`, because the Helm chart reads that

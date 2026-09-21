@@ -6,6 +6,6 @@ cover.out
 config
 crd
 examples
-test/crds
+test
 *.md
 !README.md

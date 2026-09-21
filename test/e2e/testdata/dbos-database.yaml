@@ -1,0 +1,76 @@
+# A DBOS system database for the e2e suite. It holds the one table the controller reads.
+#
+# This is not DBOS. It is a plain Postgres carrying dbos.workflow_status with the two columns the
+# outstanding-workflow query names, so the controller runs its real query against a real server.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dbos-schema
+  namespace: dbos-workers
+data:
+  schema.sql: |
+    CREATE SCHEMA dbos;
+    CREATE TABLE dbos.workflow_status (
+      workflow_uuid       text PRIMARY KEY,
+      application_version text NOT NULL,
+      status              text NOT NULL
+    );
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dbos-database
+  namespace: dbos-workers
+spec:
+  selector:
+    app.kubernetes.io/name: dbos-database
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dbos-database
+  namespace: dbos-workers
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: dbos-database
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: dbos-database
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:17-alpine
+          env:
+            - name: POSTGRES_USER
+              value: dbos
+            - name: POSTGRES_PASSWORD
+              value: dbos
+            - name: POSTGRES_DB
+              value: dbos
+            # The data directory lives under an emptyDir. The suite throws the cluster away.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: schema
+              mountPath: /docker-entrypoint-initdb.d
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "dbos", "-d", "dbos"]
+            initialDelaySeconds: 3
+            periodSeconds: 3
+      volumes:
+        - name: schema
+          configMap:
+            name: dbos-schema
+        - name: data
+          emptyDir: {}

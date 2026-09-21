@@ -62,8 +62,28 @@ vet: ## Run go vet against code.
 	go vet ./...
 
 .PHONY: test
-test: manifests generate fmt vet setup-envtest ## Run tests.
-	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" go test ./... -coverprofile cover.out
+test: manifests generate fmt vet setup-envtest ## Run tests. Excludes the e2e suite, which needs a cluster.
+	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" go test $$(go list ./... | grep -v /test/e2e) -coverprofile cover.out
+
+.PHONY: setup-test-e2e
+setup-test-e2e: kind ## Create the kind cluster the e2e suite runs against, unless it exists.
+	@"$(KIND)" get clusters 2>/dev/null | grep -q '^$(KIND_CLUSTER)$$' \
+		|| "$(KIND)" create cluster --name $(KIND_CLUSTER)
+
+.PHONY: cleanup-test-e2e
+cleanup-test-e2e: kind ## Delete the e2e kind cluster.
+	@"$(KIND)" delete cluster --name $(KIND_CLUSTER)
+
+.PHONY: test-e2e
+test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e suite against a kind cluster, then delete it.
+	@# The suite builds the image, loads it into the node, deploys config/default and drives one
+	@# WorkerVersionSet. It collects the controller's logs itself when a spec fails, because the
+	@# cluster is gone by the time the failure is read.
+	@# SHELLFLAGS carries -e, so the test result is captured rather than left to abort the recipe.
+	@# Otherwise a failing suite would leave the cluster behind.
+	KIND="$(KIND)" KIND_CLUSTER="$(KIND_CLUSTER)" \
+		go test ./test/e2e/ -v -ginkgo.v -timeout 30m && status=0 || status=$$?; \
+		$(MAKE) cleanup-test-e2e; exit $$status
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
@@ -160,10 +180,12 @@ KUBECTL ?= kubectl
 KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
+KIND ?= $(LOCALBIN)/kind
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.8.1
+KIND_VERSION ?= v0.31.0
 CONTROLLER_TOOLS_VERSION ?= v0.22.0
 
 #ENVTEST_VERSION is the controller-runtime version to use for setup-envtest, derived from go.mod
@@ -177,6 +199,10 @@ ENVTEST_K8S_VERSION ?= $(shell v='$(call gomodver,k8s.io/api)'; \
   printf '%s\n' "$$v" | sed -E 's/^v?[0-9]+\.([0-9]+).*/1.\1/')
 
 GOLANGCI_LINT_VERSION ?= v2.13.1
+
+# KIND_CLUSTER is the kind cluster the e2e suite creates and deletes.
+KIND_CLUSTER ?= dbos-version-controller-test-e2e
+
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
 $(KUSTOMIZE): $(LOCALBIN)
@@ -199,6 +225,11 @@ setup-envtest: envtest ## Download the binaries required for ENVTEST in the loca
 envtest: $(ENVTEST) ## Download setup-envtest locally if necessary.
 $(ENVTEST): $(LOCALBIN)
 	$(call go-install-tool,$(ENVTEST),sigs.k8s.io/controller-runtime/tools/setup-envtest,$(ENVTEST_VERSION))
+
+.PHONY: kind
+kind: $(KIND) ## Download kind locally if necessary.
+$(KIND): $(LOCALBIN)
+	$(call go-install-tool,$(KIND),sigs.k8s.io/kind,$(KIND_VERSION))
 
 .PHONY: golangci-lint
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
