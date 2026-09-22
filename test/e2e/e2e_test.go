@@ -118,9 +118,24 @@ var _ = Describe("WorkerVersionSet", Ordered, func() {
 			g.Expect(*old.Outstanding).To(Equal(int64(1)))
 		}).WithTimeout(timeout).WithPolling(poll).Should(Succeed())
 
+		By("scaling the parked version to zero, as KEDA would")
+		// KEDA is not installed. The controller never scales a Deployment itself: it writes
+		// minReplicaCount 0 and lets KEDA act. This is that act, and it happens while the row is
+		// still there on purpose: the controller holds a version that has either outstanding rows
+		// or running pods, so satisfying the pod gate here leaves the row as the only thing
+		// holding this version. Without it the window below would pass even if the row gate were
+		// deleted from the controller.
+		mustRun("kubectl", "scale", "-n", workerNamespace,
+			"deployment/"+workerName(firstVersion), "--replicas=0")
+		Eventually(func(g Gomega) {
+			deployment := &appsv1.Deployment{}
+			g.Expect(k8s.Get(ctx, workerKey(firstVersion), deployment)).To(Succeed())
+			g.Expect(deployment.Status.Replicas).To(BeZero())
+		}).WithTimeout(timeout).WithPolling(poll).Should(Succeed())
+
 		By("keeping the old version's objects while the row is there")
-		// graceSeconds is 10, so a version that was going to be deleted would be gone well inside
-		// this window. Nothing is: the row holds it.
+		// graceSeconds is 10, so a version held by nothing would be gone well inside this window.
+		// The pods are already at zero: the row is what holds it.
 		Consistently(func(g Gomega) {
 			g.Expect(k8s.Get(ctx, workerKey(firstVersion), &appsv1.Deployment{})).To(Succeed())
 		}).WithTimeout(holdWindow).WithPolling(poll).Should(Succeed())
@@ -130,12 +145,7 @@ var _ = Describe("WorkerVersionSet", Ordered, func() {
 		By("finishing the last workflow")
 		psql("DELETE FROM dbos.workflow_status WHERE application_version = '" + firstVersion + "'")
 
-		By("scaling the parked version to zero, as KEDA would")
-		// KEDA is not installed. The controller never scales a Deployment itself: it writes
-		// minReplicaCount 0 and lets KEDA act. This is that act.
-		mustRun("kubectl", "scale", "-n", workerNamespace,
-			"deployment/"+workerName(firstVersion), "--replicas=0")
-
+		// The version's pods are already at zero, so the row that just went is the last gate.
 		By("deleting all three objects after the grace period")
 		Eventually(func(g Gomega) {
 			expectGone(g, ctx, &appsv1.Deployment{})

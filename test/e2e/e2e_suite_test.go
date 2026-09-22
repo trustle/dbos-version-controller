@@ -104,14 +104,14 @@ var _ = BeforeSuite(func() {
 	mustRun("kubectl", "apply", "-f", "test/crds/keda.sh_scaledobjects.yaml")
 
 	By("starting the DBOS system database")
-	mustRun("kubectl", "create", "namespace", workerNamespace)
+	applyCreated("namespace", workerNamespace)
 	mustRun("kubectl", "apply", "-f", "test/e2e/testdata/dbos-database.yaml")
 	mustRun("kubectl", "rollout", "status", "-n", workerNamespace,
 		"deployment/dbos-database", "--timeout=3m")
 
 	By("deploying the controller")
-	mustRun("kubectl", "create", "namespace", controllerNamespace)
-	mustRun("kubectl", "create", "secret", "generic", "dbos-database",
+	applyCreated("namespace", controllerNamespace)
+	applyCreated("secret", "generic", "dbos-database",
 		"-n", controllerNamespace,
 		"--from-literal=system-database-url="+
 			"postgresql://dbos:dbos@dbos-database."+workerNamespace+".svc:5432/dbos?sslmode=disable")
@@ -155,6 +155,20 @@ func preserve(path string) {
 	DeferCleanup(func() {
 		Expect(os.WriteFile(full, original, 0o644)).To(Succeed())
 	})
+}
+
+// applyCreated runs one `kubectl create` client-side and applies the result, so the step is
+// idempotent. A reused cluster — one left behind by an interrupted run — would otherwise fail the
+// suite with AlreadyExists on the first namespace.
+func applyCreated(args ...string) {
+	GinkgoHelper()
+	manifest := mustRun("kubectl", append(append([]string{"create"}, args...), "--dry-run=client", "-o", "yaml")...)
+
+	command := exec.Command("kubectl", "apply", "-f", "-")
+	command.Dir = repoRoot
+	command.Stdin = strings.NewReader(manifest)
+	out, err := command.CombinedOutput()
+	Expect(err).NotTo(HaveOccurred(), "kubectl apply: %s", out)
 }
 
 // psql runs one statement against the DBOS system database.

@@ -69,20 +69,31 @@ test: manifests generate fmt vet setup-envtest ## Run tests. Excludes the e2e su
 setup-test-e2e: kind ## Create the kind cluster the e2e suite runs against, unless it exists.
 	@"$(KIND)" get clusters 2>/dev/null | grep -q '^$(KIND_CLUSTER)$$' \
 		|| "$(KIND)" create cluster --name $(KIND_CLUSTER)
+	@# Write the cluster's own kubeconfig. Only `kind create cluster` touches the current context,
+	@# so on the reuse path above nothing would point the suite at this cluster: every kubectl
+	@# call, the nested make deploy and the suite's own client would resolve whatever context the
+	@# developer left current. E2E_KUBECONFIG is what test-e2e exports instead.
+	@"$(KIND)" export kubeconfig --name $(KIND_CLUSTER) --kubeconfig "$(E2E_KUBECONFIG)"
 
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: kind ## Delete the e2e kind cluster.
 	@"$(KIND)" delete cluster --name $(KIND_CLUSTER)
 
 .PHONY: test-e2e
-test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e suite against a kind cluster, then delete it.
+test-e2e: manifests generate fmt vet ## Run the e2e suite against a kind cluster, then delete it.
+	@# The cluster is created from the recipe rather than as a prerequisite: a prerequisite that
+	@# failed after it (a vet error, say) would abort make before the cleanup line below ever ran,
+	@# and leave the cluster behind.
+	$(MAKE) setup-test-e2e
 	@# The suite builds the image, loads it into the node, deploys config/default and drives one
 	@# WorkerVersionSet. It collects the controller's logs itself when a spec fails, because the
 	@# cluster is gone by the time the failure is read.
+	@# KUBECONFIG pins every kubectl call, the nested make deploy and the suite's own client to
+	@# this cluster, so the suite cannot deploy into whatever context happens to be current.
 	@# SHELLFLAGS carries -e, so the test result is captured rather than left to abort the recipe.
 	@# Otherwise a failing suite would leave the cluster behind.
-	KIND="$(KIND)" KIND_CLUSTER="$(KIND_CLUSTER)" \
-		go test ./test/e2e/ -v -ginkgo.v -timeout 30m && status=0 || status=$$?; \
+	KUBECONFIG="$(E2E_KUBECONFIG)" KIND="$(KIND)" KIND_CLUSTER="$(KIND_CLUSTER)" \
+		go test ./test/e2e/ -v -ginkgo.v -timeout 25m && status=0 || status=$$?; \
 		$(MAKE) cleanup-test-e2e; exit $$status
 
 .PHONY: lint
@@ -200,8 +211,10 @@ ENVTEST_K8S_VERSION ?= $(shell v='$(call gomodver,k8s.io/api)'; \
 
 GOLANGCI_LINT_VERSION ?= v2.13.1
 
-# KIND_CLUSTER is the kind cluster the e2e suite creates and deletes.
+# KIND_CLUSTER is the kind cluster the e2e suite creates and deletes. E2E_KUBECONFIG is that
+# cluster's own kubeconfig, which test-e2e exports so the suite never reads the current context.
 KIND_CLUSTER ?= dbos-version-controller-test-e2e
+E2E_KUBECONFIG ?= $(LOCALBIN)/e2e.kubeconfig
 
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
