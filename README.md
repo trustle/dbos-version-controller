@@ -319,17 +319,21 @@ copy is a test fixture, and the `.dockerignore` keeps it out of the image.
 ### The end-to-end suite
 
 `make test-e2e` runs `test/e2e` against a real cluster. It needs Docker and
-nothing else: the target downloads `kind`, creates a cluster, and deletes it
-again when the suite ends, whether the suite passed or failed. `make test`
-excludes this package, because it needs that cluster.
+`kubectl`: the target downloads `kind` itself, creates a cluster, and deletes
+it again when the suite ends, whether the suite passed or failed, but the suite
+drives the cluster through `kubectl` and does not install it. The cluster keeps
+its own kubeconfig under `bin/`, so a run leaves your current context alone.
+`make test` excludes this package, because it needs that cluster.
 
 The suite covers what envtest cannot. It builds the image from the Dockerfile
 and loads it into the node, deploys `config/default`, and points the controller
 at a Postgres carrying `dbos.workflow_status`. It then drives one
-WorkerVersionSet through a version change, and asserts the three gates in
-order: the old version is parked at `minReplicaCount: 0` on its own query, it
-survives while it still holds a row, and its three objects are deleted once the
-row is gone and its pods are at zero.
+WorkerVersionSet through a version change, and takes the three deletion gates
+one at a time: the parked version survives on its running pod alone with no
+outstanding rows, then on its one outstanding row alone with its pods at zero,
+then through the grace period once both are clear — and only then are its
+Deployment, ScaledObject and PDB deleted. Isolating them is the point: a suite
+that clears two gates at once cannot say which one held.
 
 It installs the KEDA ScaledObject definition, not KEDA. The controller writes
 ScaledObjects and never reads what KEDA does with them, so where the suite

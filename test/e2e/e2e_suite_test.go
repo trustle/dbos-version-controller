@@ -72,6 +72,9 @@ const (
 	// holdWindow is how long a version holding work must survive. It is longer than the set's
 	// graceSeconds, so a version that was going to be deleted would be gone inside it.
 	holdWindow = 30 * time.Second
+	// graceProbe is how long a version with every gate clear must still survive. It is shorter
+	// than the set's graceSeconds, so a controller that deleted on the spot would be caught.
+	graceProbe = 5 * time.Second
 )
 
 // repoRoot is where every shelled-out command runs. The test binary runs in test/e2e.

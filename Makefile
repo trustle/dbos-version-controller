@@ -68,23 +68,23 @@ test: manifests generate fmt vet setup-envtest ## Run tests. Excludes the e2e su
 .PHONY: setup-test-e2e
 setup-test-e2e: kind ## Create the kind cluster the e2e suite runs against, unless it exists.
 	@"$(KIND)" get clusters 2>/dev/null | grep -q '^$(KIND_CLUSTER)$$' \
-		|| "$(KIND)" create cluster --name $(KIND_CLUSTER)
-	@# Write the cluster's own kubeconfig. Only `kind create cluster` touches the current context,
-	@# so on the reuse path above nothing would point the suite at this cluster: every kubectl
-	@# call, the nested make deploy and the suite's own client would resolve whatever context the
-	@# developer left current. E2E_KUBECONFIG is what test-e2e exports instead.
+		|| "$(KIND)" create cluster --name $(KIND_CLUSTER) --kubeconfig "$(E2E_KUBECONFIG)"
+	@# Write the cluster's own kubeconfig. --kubeconfig above keeps create from touching the
+	@# developer's ~/.kube/config and switching its current context; this line covers the reuse
+	@# path, where create does not run at all and nothing would otherwise point the suite at this
+	@# cluster. Either way E2E_KUBECONFIG is what test-e2e exports, so every kubectl call, the
+	@# nested make deploy and the suite's own client resolve this cluster and no other.
 	@"$(KIND)" export kubeconfig --name $(KIND_CLUSTER) --kubeconfig "$(E2E_KUBECONFIG)"
 
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: kind ## Delete the e2e kind cluster.
-	@"$(KIND)" delete cluster --name $(KIND_CLUSTER)
+	@# kind reads the kubeconfig to drop the cluster's entry, and refuses a path that is not
+	@# there. Cleanup also runs when setup failed before writing it, so make sure it exists.
+	@touch "$(E2E_KUBECONFIG)"
+	@"$(KIND)" delete cluster --name $(KIND_CLUSTER) --kubeconfig "$(E2E_KUBECONFIG)"
 
 .PHONY: test-e2e
 test-e2e: manifests generate fmt vet ## Run the e2e suite against a kind cluster, then delete it.
-	@# The cluster is created from the recipe rather than as a prerequisite: a prerequisite that
-	@# failed after it (a vet error, say) would abort make before the cleanup line below ever ran,
-	@# and leave the cluster behind.
-	$(MAKE) setup-test-e2e
 	@# The suite builds the image, loads it into the node, deploys config/default and drives one
 	@# WorkerVersionSet. It collects the controller's logs itself when a spec fails, because the
 	@# cluster is gone by the time the failure is read.
@@ -92,8 +92,14 @@ test-e2e: manifests generate fmt vet ## Run the e2e suite against a kind cluster
 	@# this cluster, so the suite cannot deploy into whatever context happens to be current.
 	@# SHELLFLAGS carries -e, so the test result is captured rather than left to abort the recipe.
 	@# Otherwise a failing suite would leave the cluster behind.
-	KUBECONFIG="$(E2E_KUBECONFIG)" KIND="$(KIND)" KIND_CLUSTER="$(KIND_CLUSTER)" \
-		go test ./test/e2e/ -v -ginkgo.v -timeout 25m && status=0 || status=$$?; \
+	@# Setup runs here and not as a prerequisite, and in the same shell as the suite: anything
+	@# that fails between creating the cluster and this line — another prerequisite, or the
+	@# kubeconfig export itself — would otherwise abort make before cleanup and leave the cluster
+	@# behind. A failing setup skips the suite and carries its own status out.
+	$(MAKE) setup-test-e2e \
+		&& KUBECONFIG="$(E2E_KUBECONFIG)" KIND="$(KIND)" KIND_CLUSTER="$(KIND_CLUSTER)" \
+			go test ./test/e2e/ -v -ginkgo.v -timeout 25m \
+		&& status=0 || status=$$?; \
 		$(MAKE) cleanup-test-e2e; exit $$status
 
 .PHONY: lint

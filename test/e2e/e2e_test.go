@@ -73,13 +73,10 @@ var _ = Describe("WorkerVersionSet", Ordered, func() {
 		}).WithTimeout(timeout).WithPolling(poll).Should(Succeed())
 	})
 
-	It("parks an old version and keeps it while it still holds work", func() {
-		By("giving the old version one unfinished workflow")
-		psql(fmt.Sprintf(
-			"INSERT INTO dbos.workflow_status (workflow_uuid, application_version, status) "+
-				"VALUES ('wf-1', '%s', 'PENDING')", firstVersion))
-
+	It("parks an old version and holds it on its running pod", func() {
 		By("moving the set to the next version")
+		// No outstanding row exists yet, so the pod the old version still runs is the only gate
+		// holding it. That is what this spec proves.
 		mustRun("kubectl", "patch", "workerversionset", setName, "-n", workerNamespace,
 			"--type=merge", "-p", fmt.Sprintf(`{"spec":{"version":%q}}`, secondVersion))
 
@@ -110,21 +107,32 @@ var _ = Describe("WorkerVersionSet", Ordered, func() {
 			g.Expect(metadata["query"]).To(ContainSubstring("application_version = '" + firstVersion + "'"))
 		}).WithTimeout(timeout).WithPolling(poll).Should(Succeed())
 
-		By("reporting the old version as Draining with its one row")
+		By("reporting the old version as Draining with nothing outstanding")
 		Eventually(func(g Gomega) {
 			old := versionEntry(g, readStatus(ctx, g), firstVersion)
 			g.Expect(old.Phase).To(Equal(dbosv1alpha1.PhaseDraining))
 			g.Expect(old.Outstanding).NotTo(BeNil())
-			g.Expect(*old.Outstanding).To(Equal(int64(1)))
+			g.Expect(*old.Outstanding).To(BeZero())
 		}).WithTimeout(timeout).WithPolling(poll).Should(Succeed())
+
+		By("keeping the old version's objects while its pod is up")
+		// graceSeconds is 10, so a version held by nothing would be gone well inside this window.
+		// The row count is zero: the pod is what holds it.
+		Consistently(func(g Gomega) {
+			g.Expect(k8s.Get(ctx, workerKey(firstVersion), &appsv1.Deployment{})).To(Succeed())
+		}).WithTimeout(holdWindow).WithPolling(poll).Should(Succeed())
+	})
+
+	It("holds a parked version that still has work, with its pods at zero", func() {
+		By("giving the old version one unfinished workflow")
+		psql(fmt.Sprintf(
+			"INSERT INTO dbos.workflow_status (workflow_uuid, application_version, status) "+
+				"VALUES ('wf-1', '%s', 'PENDING')", firstVersion))
 
 		By("scaling the parked version to zero, as KEDA would")
 		// KEDA is not installed. The controller never scales a Deployment itself: it writes
-		// minReplicaCount 0 and lets KEDA act. This is that act, and it happens while the row is
-		// still there on purpose: the controller holds a version that has either outstanding rows
-		// or running pods, so satisfying the pod gate here leaves the row as the only thing
-		// holding this version. Without it the window below would pass even if the row gate were
-		// deleted from the controller.
+		// minReplicaCount 0 and lets KEDA act. This is that act. It happens after the row exists,
+		// so the two gates swap over rather than both clearing at once.
 		mustRun("kubectl", "scale", "-n", workerNamespace,
 			"deployment/"+workerName(firstVersion), "--replicas=0")
 		Eventually(func(g Gomega) {
@@ -133,19 +141,32 @@ var _ = Describe("WorkerVersionSet", Ordered, func() {
 			g.Expect(deployment.Status.Replicas).To(BeZero())
 		}).WithTimeout(timeout).WithPolling(poll).Should(Succeed())
 
+		By("reporting the old version as Draining with its one row")
+		Eventually(func(g Gomega) {
+			old := versionEntry(g, readStatus(ctx, g), firstVersion)
+			g.Expect(old.Phase).To(Equal(dbosv1alpha1.PhaseDraining))
+			g.Expect(old.Outstanding).NotTo(BeNil())
+			g.Expect(*old.Outstanding).To(Equal(int64(1)))
+		}).WithTimeout(timeout).WithPolling(poll).Should(Succeed())
+
 		By("keeping the old version's objects while the row is there")
-		// graceSeconds is 10, so a version held by nothing would be gone well inside this window.
-		// The pods are already at zero: the row is what holds it.
+		// The pods are already at zero: the row is the only thing left holding it.
 		Consistently(func(g Gomega) {
 			g.Expect(k8s.Get(ctx, workerKey(firstVersion), &appsv1.Deployment{})).To(Succeed())
 		}).WithTimeout(holdWindow).WithPolling(poll).Should(Succeed())
 	})
 
-	It("deletes the old version once it is empty", func() {
+	It("deletes the old version once it is empty, and not before the grace period", func() {
 		By("finishing the last workflow")
+		// Both other gates are already clear, so this starts the grace clock. The controller
+		// cannot have marked the version drained before now: the marker needs zero rows.
 		psql("DELETE FROM dbos.workflow_status WHERE application_version = '" + firstVersion + "'")
 
-		// The version's pods are already at zero, so the row that just went is the last gate.
+		By("holding the old version until the grace period is up")
+		Consistently(func(g Gomega) {
+			g.Expect(k8s.Get(ctx, workerKey(firstVersion), &appsv1.Deployment{})).To(Succeed())
+		}).WithTimeout(graceProbe).WithPolling(poll).Should(Succeed())
+
 		By("deleting all three objects after the grace period")
 		Eventually(func(g Gomega) {
 			expectGone(g, ctx, &appsv1.Deployment{})
