@@ -62,8 +62,45 @@ vet: ## Run go vet against code.
 	go vet ./...
 
 .PHONY: test
-test: manifests generate fmt vet setup-envtest ## Run tests.
-	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" go test ./... -coverprofile cover.out
+test: manifests generate fmt vet setup-envtest ## Run tests. Excludes the e2e suite, which needs a cluster.
+	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" go test $$(go list ./... | grep -v /test/e2e) -coverprofile cover.out
+
+.PHONY: setup-test-e2e
+setup-test-e2e: kind ## Create the kind cluster the e2e suite runs against, unless it exists.
+	@"$(KIND)" get clusters 2>/dev/null | grep -q '^$(KIND_CLUSTER)$$' \
+		|| "$(KIND)" create cluster --name $(KIND_CLUSTER) --kubeconfig "$(E2E_KUBECONFIG)"
+	@# Write the cluster's own kubeconfig. --kubeconfig above keeps create from touching the
+	@# developer's ~/.kube/config and switching its current context; this line covers the reuse
+	@# path, where create does not run at all and nothing would otherwise point the suite at this
+	@# cluster. Either way E2E_KUBECONFIG is what test-e2e exports, so every kubectl call, the
+	@# nested make deploy and the suite's own client resolve this cluster and no other.
+	@"$(KIND)" export kubeconfig --name $(KIND_CLUSTER) --kubeconfig "$(E2E_KUBECONFIG)"
+
+.PHONY: cleanup-test-e2e
+cleanup-test-e2e: kind ## Delete the e2e kind cluster.
+	@# kind reads the kubeconfig to drop the cluster's entry, and refuses a path that is not
+	@# there. Cleanup also runs when setup failed before writing it, so make sure it exists.
+	@touch "$(E2E_KUBECONFIG)"
+	@"$(KIND)" delete cluster --name $(KIND_CLUSTER) --kubeconfig "$(E2E_KUBECONFIG)"
+
+.PHONY: test-e2e
+test-e2e: manifests generate fmt vet ## Run the e2e suite against a kind cluster, then delete it.
+	@# The suite builds the image, loads it into the node, deploys config/default and drives one
+	@# WorkerVersionSet. It collects the controller's logs itself when a spec fails, because the
+	@# cluster is gone by the time the failure is read.
+	@# KUBECONFIG pins every kubectl call, the nested make deploy and the suite's own client to
+	@# this cluster, so the suite cannot deploy into whatever context happens to be current.
+	@# SHELLFLAGS carries -e, so the test result is captured rather than left to abort the recipe.
+	@# Otherwise a failing suite would leave the cluster behind.
+	@# Setup runs here and not as a prerequisite, and in the same shell as the suite: anything
+	@# that fails between creating the cluster and this line — another prerequisite, or the
+	@# kubeconfig export itself — would otherwise abort make before cleanup and leave the cluster
+	@# behind. A failing setup skips the suite and carries its own status out.
+	$(MAKE) setup-test-e2e \
+		&& KUBECONFIG="$(E2E_KUBECONFIG)" KIND="$(KIND)" KIND_CLUSTER="$(KIND_CLUSTER)" \
+			go test ./test/e2e/ -v -ginkgo.v -timeout 25m \
+		&& status=0 || status=$$?; \
+		$(MAKE) cleanup-test-e2e; exit $$status
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
@@ -160,10 +197,12 @@ KUBECTL ?= kubectl
 KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
+KIND ?= $(LOCALBIN)/kind
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.8.1
+KIND_VERSION ?= v0.31.0
 CONTROLLER_TOOLS_VERSION ?= v0.22.0
 
 #ENVTEST_VERSION is the controller-runtime version to use for setup-envtest, derived from go.mod
@@ -177,6 +216,12 @@ ENVTEST_K8S_VERSION ?= $(shell v='$(call gomodver,k8s.io/api)'; \
   printf '%s\n' "$$v" | sed -E 's/^v?[0-9]+\.([0-9]+).*/1.\1/')
 
 GOLANGCI_LINT_VERSION ?= v2.13.1
+
+# KIND_CLUSTER is the kind cluster the e2e suite creates and deletes. E2E_KUBECONFIG is that
+# cluster's own kubeconfig, which test-e2e exports so the suite never reads the current context.
+KIND_CLUSTER ?= dbos-version-controller-test-e2e
+E2E_KUBECONFIG ?= $(LOCALBIN)/e2e.kubeconfig
+
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
 $(KUSTOMIZE): $(LOCALBIN)
@@ -199,6 +244,11 @@ setup-envtest: envtest ## Download the binaries required for ENVTEST in the loca
 envtest: $(ENVTEST) ## Download setup-envtest locally if necessary.
 $(ENVTEST): $(LOCALBIN)
 	$(call go-install-tool,$(ENVTEST),sigs.k8s.io/controller-runtime/tools/setup-envtest,$(ENVTEST_VERSION))
+
+.PHONY: kind
+kind: $(KIND) ## Download kind locally if necessary.
+$(KIND): $(LOCALBIN)
+	$(call go-install-tool,$(KIND),sigs.k8s.io/kind,$(KIND_VERSION))
 
 .PHONY: golangci-lint
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.

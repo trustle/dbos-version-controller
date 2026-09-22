@@ -1,0 +1,72 @@
+# The WorkerVersionSet the e2e suite reconciles.
+#
+# graceSeconds is 10, so a drained version is deleted within one spec rather than the ten minutes
+# the default grace period would take. The worker image is pause: the suite needs a pod that stays
+# up and takes no work, not a DBOS executor.
+apiVersion: dbos.trustle.com/v1alpha1
+kind: WorkerVersionSet
+metadata:
+  name: e2e-worker
+  namespace: dbos-workers
+spec:
+  version: "v1"
+  image: "registry.k8s.io/pause:3.10"
+  graceSeconds: 10
+  template:
+    deployment: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: e2e-worker-__VERSION__
+        labels:
+          app.kubernetes.io/managed-by: dbos-version-controller
+          dbos-app-version: __VERSION__
+      spec:
+        replicas: 1
+        selector:
+          matchLabels:
+            app.kubernetes.io/name: e2e-worker
+            dbos-app-version: __VERSION__
+        template:
+          metadata:
+            labels:
+              app.kubernetes.io/name: e2e-worker
+              dbos-app-version: __VERSION__
+          spec:
+            containers:
+              - name: worker
+                image: __IMAGE__
+                env:
+                  - name: DBOS_APPLICATION_VERSION
+                    value: __VERSION__
+    scaledObject: |
+      apiVersion: keda.sh/v1alpha1
+      kind: ScaledObject
+      metadata:
+        name: e2e-worker-__VERSION__
+      spec:
+        scaleTargetRef:
+          name: e2e-worker-__VERSION__
+        minReplicaCount: 1
+        maxReplicaCount: 3
+        triggers:
+          - type: postgresql
+            metadata:
+              query: "SELECT count(*) FROM dbos.workflow_status WHERE application_version = '__VERSION__' AND status IN ('ENQUEUED','PENDING')"
+              targetQueryValue: "1"
+              host: dbos-database.dbos-workers.svc
+              port: "5432"
+              userName: dbos
+              dbName: dbos
+              sslmode: disable
+    podDisruptionBudget: |
+      apiVersion: policy/v1
+      kind: PodDisruptionBudget
+      metadata:
+        name: e2e-worker-__VERSION__
+      spec:
+        minAvailable: 0
+        selector:
+          matchLabels:
+            app.kubernetes.io/name: e2e-worker
+            dbos-app-version: __VERSION__
