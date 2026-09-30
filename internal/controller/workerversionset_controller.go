@@ -267,7 +267,11 @@ func (r *WorkerVersionSetReconciler) applyDesired(
 			}
 			created = true
 		}
-		logger.Info("apply", "kind", kind, "name", name, "version", version, "image", image, "created", created)
+		// Dry run already logged "Would create" or "Would patch"; an "apply" line here would
+		// claim a write that never happened (and read as a promotion to log consumers).
+		if !r.Config.DryRun {
+			logger.Info("apply", "kind", kind, "name", name, "version", version, "image", image, "created", created)
+		}
 	}
 
 	return templateScaledObject, nil
