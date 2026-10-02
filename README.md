@@ -53,11 +53,16 @@ For one set:
 7. Park that version: patch its ScaledObject to `minReplicaCount: 0` with one
    postgresql trigger that counts the same rows. KEDA then scales the version up
    when its own work appears, and back to zero when that work finishes.
-8. If the version has zero rows and zero pods, write the drained marker
-   annotation with the current time. If work returns, clear the marker.
-9. Delete the version's three objects once the marker is older than the grace
+8. Count the live pods in the namespace that carry `<version_label>=<version>`
+   but not `app.kubernetes.io/managed-by=<managed_by>`: pods outside the set
+   that still run that version, such as an API that enqueues work at its own
+   version.
+9. If the version has zero rows, zero worker pods and zero such pods, write the
+   drained marker annotation with the current time. If work or a pod returns,
+   clear the marker.
+10. Delete the version's three objects once the marker is older than the grace
    period.
-10. Patch the set's status subresource with the versions it saw and one `Ready`
+11. Patch the set's status subresource with the versions it saw and one `Ready`
     condition.
 
 ```mermaid
@@ -71,7 +76,7 @@ flowchart TD
     F -- yes --> E
     F -- no --> G[Count ENQUEUED + PENDING rows for that version]
     G --> H[Patch ScaledObject: minReplicaCount 0, one outstanding trigger]
-    H --> I{rows = 0 and pods = 0?}
+    H --> I{rows = 0, worker pods = 0 and no other pod carries the version?}
     I -- no --> J[Clear the drained marker]
     I -- yes --> K{Marker older than grace?}
     K -- no --> L[Write or keep the marker]
@@ -238,6 +243,10 @@ the source of truth:
 | `apps` | `deployments` | get, list, watch, create, patch, delete |
 | `policy` | `poddisruptionbudgets` | get, create, patch, delete |
 | `keda.sh` | `scaledobjects` | get, create, patch, delete |
+| `""` | `pods` | list |
+
+The pod list is read uncached, through the manager's API reader, so the
+controller never watches every pod in the namespace.
 
 `examples/controller.yaml` holds the same rules as one namespaced Role, next to
 a ServiceAccount, a RoleBinding and a Deployment.
@@ -270,6 +279,9 @@ its sets are namespaced.
   row count keeps every object.
 - The controller deletes a version only after zero rows and zero pods for the
   full grace period. Work that returns clears the marker and restarts the clock.
+- A live pod outside the set that carries the version's label holds the version:
+  while it runs, the version is never marked drained or deleted. A pod list the
+  controller cannot read counts as unknown, and deletes nothing.
 - A rollback to a drained version clears its marker, so the version gets a fresh
   grace period rather than an immediate delete.
 - A failed drain logs, continues with the remaining versions, and reports

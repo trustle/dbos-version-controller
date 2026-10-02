@@ -38,10 +38,12 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -65,6 +67,10 @@ type WorkerVersionSetReconciler struct {
 
 	// Outstanding counts the unfinished workflows of one application version.
 	Outstanding OutstandingFunc
+	// Pods reads the namespace's pods to find the ones outside the set that still carry a
+	// version. Wire an uncached reader (the manager's APIReader): the controller has no reason
+	// to cache every pod in the namespace.
+	Pods client.Reader
 	// Clock reads the current time. Tests replace it.
 	Clock func() time.Time
 }
@@ -83,6 +89,7 @@ type managedDeployment struct {
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;patch;delete
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;create;patch;delete
 // +kubebuilder:rbac:groups=keda.sh,resources=scaledobjects,verbs=get;create;patch;delete
+// +kubebuilder:rbac:groups="",resources=pods,verbs=list
 
 // Reconcile brings one WorkerVersionSet's worker objects to their desired state and patches its
 // status. A set that fails is reported on its own status and reconciled again next interval.
@@ -185,7 +192,8 @@ func (r *WorkerVersionSetReconciler) reconcileSet(
 		}
 
 		rows := count(deployment.Version)
-		entry, err := r.drain(ctx, set, deployment, templateScaledObject, rows, now, grace)
+		holders := r.holders(ctx, deployment.Version)
+		entry, err := r.drain(ctx, set, deployment, templateScaledObject, rows, holders, now, grace)
 		if err != nil {
 			logger.Error(err, "Failed to drain worker version; continuing with the remaining versions",
 				"name", deployment.Name, "version", deployment.Version)
@@ -280,6 +288,9 @@ func (r *WorkerVersionSetReconciler) applyDesired(
 // drain parks one non-desired version, and deletes it once it has been idle for the grace period.
 //
 // rows == nil means the outstanding count is unknown, and an unknown count never deletes.
+// holders counts the pods outside the set that still carry the version, such as an
+// application's API pods that enqueue work at their own version: while any exists, the version
+// can still receive work, so it is busy. holders == nil is unknown, and never deletes either.
 //
 // The ScaledObject can be missing — deleted out of band, or never created because a prior tick
 // failed before it patched. Re-render it from the raw template for this version and merge the
@@ -291,6 +302,7 @@ func (r *WorkerVersionSetReconciler) drain(
 	deployment managedDeployment,
 	templateScaledObject *unstructured.Unstructured,
 	rows *int64,
+	holders *int64,
 	now time.Time,
 	grace time.Duration,
 ) (dbosv1alpha1.VersionStatus, error) {
@@ -322,14 +334,14 @@ func (r *WorkerVersionSetReconciler) drain(
 		}
 	}
 	logger.Info("drain", "name", deployment.Name, "version", deployment.Version,
-		"rows", rowsValue(rows), "pods", deployment.Replicas)
+		"rows", rowsValue(rows), "pods", deployment.Replicas, "holders", rowsValue(holders))
 
-	if rows == nil {
+	if rows == nil || holders == nil {
 		return entry, nil
 	}
 
 	marker := deployment.Annotations[DrainedSinceAnnotation]
-	if *rows > 0 || deployment.Replicas > 0 {
+	if *rows > 0 || deployment.Replicas > 0 || *holders > 0 {
 		if marker != "" {
 			if err := r.mark(ctx, deployment.Name, nil); err != nil {
 				return entry, err
@@ -367,6 +379,44 @@ func (r *WorkerVersionSetReconciler) drain(
 	}
 	logger.Info("Deleted drained worker version", "name", deployment.Name, "version", deployment.Version)
 	return entry, nil
+}
+
+// holders counts the live pods in the namespace that carry version in the version label but are
+// not this controller's own worker pods, or returns nil when the count is unknown.
+//
+// A producer can enqueue at its own application version: an API pod tags every workflow it starts
+// with the version it was built from. Such a pod keeps writing work for its version until it is
+// replaced, even after the version's own workers drained, so deleting the version then would leave
+// that work with no executor. Counting the pods that still carry the version closes that gap
+// without the controller having to know which workloads produce work.
+func (r *WorkerVersionSetReconciler) holders(ctx context.Context, version string) *int64 {
+	if r.Pods == nil {
+		zero := int64(0)
+		return &zero
+	}
+	selector, err := labels.Parse(fmt.Sprintf("%s=%s,%s!=%s",
+		r.Config.VersionLabel, version, ManagedByLabel, r.Config.ManagedBy))
+	if err != nil {
+		log.FromContext(ctx).Error(err, "Cannot build the holder selector; deleting nothing for this version",
+			"version", version)
+		return nil
+	}
+	pods := &corev1.PodList{}
+	if err := r.Pods.List(ctx, pods, client.InNamespace(r.Config.Namespace),
+		client.MatchingLabelsSelector{Selector: selector}); err != nil {
+		log.FromContext(ctx).Error(err, "Cannot list the pods that carry a version; deleting nothing for it",
+			"version", version)
+		return nil
+	}
+	var live int64
+	for index := range pods.Items {
+		pod := &pods.Items[index]
+		if pod.DeletionTimestamp != nil || pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+			continue
+		}
+		live++
+	}
+	return &live
 }
 
 // listManaged returns every worker Deployment of one set, found by label.
