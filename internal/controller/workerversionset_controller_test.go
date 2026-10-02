@@ -17,13 +17,18 @@ limitations under the License.
 package controller
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	dbosv1alpha1 "github.com/trustle/dbos-version-controller/api/v1alpha1"
 	"github.com/trustle/dbos-version-controller/internal/config"
@@ -378,6 +383,138 @@ func TestClearsTheMarkerWhenWorkflowsReappear(t *testing.T) {
 	}
 	if !f.present(kindDeployment, workerName(oldVersion)) {
 		t.Fatal("a busy version was deleted")
+	}
+}
+
+func TestAPodOutsideTheSetThatCarriesTheVersionKeepsItPastTheGracePeriod(t *testing.T) {
+	f := newFixture(t)
+	f.createSet(setName, desiredVersion)
+	f.createWorker(setName, oldVersion, 0, map[string]string{
+		DrainedSinceAnnotation: timestamp(now.Add(-2 * time.Hour)),
+	})
+	f.createScaledObject(oldVersion)
+	// An API pod still on the old build: it enqueues work at its own version.
+	f.createPod("api-old", map[string]string{config.DefaultVersionLabel: oldVersion}, corev1.PodRunning)
+
+	f.reconcile(setName)
+
+	if !f.present(kindDeployment, workerName(oldVersion)) {
+		t.Fatal("a version deleted while a pod outside the set still carried it")
+	}
+	if _, marked := f.deployment(workerName(oldVersion)).Annotations[DrainedSinceAnnotation]; marked {
+		t.Fatal("the drained marker survived a pod that still carries the version")
+	}
+}
+
+func TestOnlyLivePodsOutsideTheSetHoldAVersion(t *testing.T) {
+	f := newFixture(t)
+	f.createSet(setName, desiredVersion)
+	f.createWorker(setName, oldVersion, 0, map[string]string{
+		DrainedSinceAnnotation: timestamp(now.Add(-2 * time.Hour)),
+	})
+	f.createScaledObject(oldVersion)
+	// A finished pod, and one of the controller's own worker pods, do not hold the version.
+	f.createPod("api-done", map[string]string{config.DefaultVersionLabel: oldVersion}, corev1.PodSucceeded)
+	f.createPod("api-crashed", map[string]string{config.DefaultVersionLabel: oldVersion}, corev1.PodFailed)
+	f.createPod("worker-own", map[string]string{
+		config.DefaultVersionLabel: oldVersion,
+		ManagedByLabel:             config.DefaultManagedBy,
+	}, corev1.PodRunning)
+
+	f.reconcile(setName)
+
+	if f.present(kindDeployment, workerName(oldVersion)) {
+		t.Fatal("a Succeeded or Failed pod, or a worker pod of the set, kept a drained version alive")
+	}
+}
+
+func TestATerminatingPodStillHoldsItsVersion(t *testing.T) {
+	f := newFixture(t)
+	f.createSet(setName, desiredVersion)
+	f.createWorker(setName, oldVersion, 0, map[string]string{
+		DrainedSinceAnnotation: timestamp(now.Add(-2 * time.Hour)),
+	})
+	f.createScaledObject(oldVersion)
+	f.createPod("api-stopping", map[string]string{config.DefaultVersionLabel: oldVersion}, corev1.PodRunning)
+	// A finalizer keeps the pod in its graceful-termination window after the delete.
+	pod := &corev1.Pod{}
+	if err := f.get("api-stopping", pod); err != nil {
+		t.Fatalf("read the pod: %v", err)
+	}
+	pod.Finalizers = []string{"test.dbos.trustle.com/hold"}
+	if err := k8sClient.Update(f.ctx, pod); err != nil {
+		t.Fatalf("add the finalizer: %v", err)
+	}
+	if err := k8sClient.Delete(f.ctx, pod); err != nil {
+		t.Fatalf("delete the pod: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := f.get("api-stopping", pod); err == nil {
+			pod.Finalizers = nil
+			_ = k8sClient.Update(f.ctx, pod)
+		}
+	})
+
+	f.reconcile(setName)
+
+	if !f.present(kindDeployment, workerName(oldVersion)) {
+		t.Fatal("a version deleted while a terminating pod still carried it")
+	}
+}
+
+func TestAnUnconfiguredPodReaderDeletesNothing(t *testing.T) {
+	f := newFixture(t)
+	f.reconciler.Pods = nil
+	f.createSet(setName, desiredVersion)
+	f.createWorker(setName, oldVersion, 0, map[string]string{
+		DrainedSinceAnnotation: timestamp(now.Add(-2 * time.Hour)),
+	})
+	f.createScaledObject(oldVersion)
+
+	f.reconcile(setName)
+
+	if !f.present(kindDeployment, workerName(oldVersion)) {
+		t.Fatal("a version deleted with no pod reader to check who still carries it")
+	}
+}
+
+func TestAPodListFailureDeletesNothingAndReportsPodsUnavailable(t *testing.T) {
+	f := newFixture(t)
+	f.reconciler.Pods = failingReader{}
+	f.createSet(setName, desiredVersion)
+	f.createWorker(setName, oldVersion, 0, map[string]string{
+		DrainedSinceAnnotation: timestamp(now.Add(-2 * time.Hour)),
+	})
+	f.createScaledObject(oldVersion)
+
+	f.reconcile(setName)
+
+	if !f.present(kindDeployment, workerName(oldVersion)) {
+		t.Fatal("a version deleted while the pods that carry it could not be listed")
+	}
+	ready := f.ready(setName)
+	if ready.Reason != ReasonPodsUnavailable || ready.Status != metav1.ConditionFalse {
+		t.Fatalf("the Ready condition is %s/%s", ready.Status, ready.Reason)
+	}
+	if !strings.Contains(ready.Message, oldVersion) {
+		t.Fatalf("the Ready message %q does not name the version", ready.Message)
+	}
+}
+
+func TestAPodInAnotherNamespaceDoesNotHoldAVersion(t *testing.T) {
+	f := newFixture(t)
+	other := newFixture(t)
+	f.createSet(setName, desiredVersion)
+	f.createWorker(setName, oldVersion, 0, map[string]string{
+		DrainedSinceAnnotation: timestamp(now.Add(-2 * time.Hour)),
+	})
+	f.createScaledObject(oldVersion)
+	other.createPod("api-elsewhere", map[string]string{config.DefaultVersionLabel: oldVersion}, corev1.PodRunning)
+
+	f.reconcile(setName)
+
+	if f.present(kindDeployment, workerName(oldVersion)) {
+		t.Fatal("a pod in another namespace held a drained version")
 	}
 }
 
@@ -756,4 +893,15 @@ func assertRollbackRestartsTheClock(t *testing.T, f *fixture) {
 	if previews := f.messages("Would delete worker object"); len(previews) != 0 {
 		t.Fatalf("dry run previewed %d deletes of a version with a fresh grace period", len(previews))
 	}
+}
+
+// failingReader fails every read, standing in for a pod list the API server refuses.
+type failingReader struct{}
+
+func (failingReader) Get(context.Context, client.ObjectKey, client.Object, ...client.GetOption) error {
+	return errors.New("pods are forbidden")
+}
+
+func (failingReader) List(context.Context, client.ObjectList, ...client.ListOption) error {
+	return errors.New("pods are forbidden")
 }

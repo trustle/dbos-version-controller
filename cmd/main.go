@@ -120,6 +120,7 @@ func main() {
 		Scheme:      mgr.GetScheme(),
 		Config:      settings,
 		Outstanding: db.NewOutstandingCounter(settings.DatabaseURL, controller.OutstandingSQL),
+		Pods:        mgr.GetAPIReader(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "workerversionset")
 		os.Exit(1)

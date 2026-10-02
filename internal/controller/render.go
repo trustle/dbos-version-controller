@@ -69,6 +69,9 @@ const (
 	ReasonInvalidSpec = "InvalidSpec"
 	// ReasonDatabaseUnavailable means the outstanding count is unknown, so nothing was deleted.
 	ReasonDatabaseUnavailable = "DatabaseUnavailable"
+	// ReasonPodsUnavailable means the pods that carry a version could not be counted, so nothing was
+	// deleted for those versions.
+	ReasonPodsUnavailable = "PodsUnavailable"
 	// ReasonDrainFailed names the versions whose drain failed.
 	ReasonDrainFailed = "DrainFailed"
 	// ReasonReconcileError means the reconcile of the whole set failed.

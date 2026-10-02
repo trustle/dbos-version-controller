@@ -21,7 +21,10 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
+
+	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 // Defaults for every optional setting.
@@ -104,6 +107,14 @@ func (c Config) Validate() error {
 	}
 	if c.Grace < 0 {
 		return fmt.Errorf("DVC_GRACE_SECONDS must not be negative")
+	}
+	// Both go into the label selector that finds the pods holding a version, so an unusable value
+	// would leave every count unknown and stop every delete.
+	if problems := validation.IsQualifiedName(c.VersionLabel); len(problems) > 0 {
+		return fmt.Errorf("DVC_VERSION_LABEL %q is not a valid label key: %s", c.VersionLabel, strings.Join(problems, "; "))
+	}
+	if problems := validation.IsValidLabelValue(c.ManagedBy); len(problems) > 0 || c.ManagedBy == "" {
+		return fmt.Errorf("DVC_MANAGED_BY %q is not a valid label value: %s", c.ManagedBy, strings.Join(problems, "; "))
 	}
 	return nil
 }

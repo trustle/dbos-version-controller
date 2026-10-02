@@ -243,6 +243,7 @@ func newFixture(t *testing.T, options ...func(*config.Config)) *fixture {
 		Scheme: scheme.Scheme,
 		Config: settings,
 		Clock:  func() time.Time { return f.clock },
+		Pods:   k8sClient,
 		Outstanding: func(_ context.Context, version string) (int64, error) {
 			if f.countErr != nil {
 				return 0, f.countErr
@@ -351,6 +352,23 @@ func (f *fixture) createScaledObject(version string) {
 	manifest.SetNamespace(f.namespace)
 	if err := k8sClient.Create(f.ctx, manifest); err != nil {
 		f.t.Fatalf("create the ScaledObject of %s: %v", version, err)
+	}
+}
+
+// createPod creates one pod in the fixture namespace with the given labels and phase. The
+// envtest API server runs no kubelet, so the phase is written through the status subresource.
+func (f *fixture) createPod(name string, podLabels map[string]string, phase corev1.PodPhase) {
+	f.t.Helper()
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: f.namespace, Labels: podLabels},
+		Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "example.com/app:1"}}},
+	}
+	if err := k8sClient.Create(f.ctx, pod); err != nil {
+		f.t.Fatalf("create the pod %s: %v", name, err)
+	}
+	pod.Status.Phase = phase
+	if err := k8sClient.Status().Update(f.ctx, pod); err != nil {
+		f.t.Fatalf("set the phase of the pod %s: %v", name, err)
 	}
 }
 

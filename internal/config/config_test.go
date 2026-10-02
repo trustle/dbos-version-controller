@@ -86,3 +86,24 @@ func TestTheRequiredSettingsAreRequired(t *testing.T) {
 		t.Fatal("a missing DVC_DATABASE_URL was accepted")
 	}
 }
+
+func TestTheLabelSettingsMustBeUsableInASelector(t *testing.T) {
+	valid := Default()
+	valid.Namespace = "dbos-workers"
+	valid.DatabaseURL = databaseURL
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("the defaults are rejected: %v", err)
+	}
+
+	for name, mutate := range map[string]func(*Config){
+		"version label with a space": func(c *Config) { c.VersionLabel = "dbos app version" },
+		"managed-by with a comma":    func(c *Config) { c.ManagedBy = "a,b" },
+		"empty managed-by":           func(c *Config) { c.ManagedBy = "" },
+	} {
+		settings := valid
+		mutate(&settings)
+		if settings.Validate() == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
