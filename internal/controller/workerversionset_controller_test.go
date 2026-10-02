@@ -426,6 +426,56 @@ func TestOnlyLivePodsOutsideTheSetHoldAVersion(t *testing.T) {
 	}
 }
 
+func TestATerminatingPodStillHoldsItsVersion(t *testing.T) {
+	f := newFixture(t)
+	f.createSet(setName, desiredVersion)
+	f.createWorker(setName, oldVersion, 0, map[string]string{
+		DrainedSinceAnnotation: timestamp(now.Add(-2 * time.Hour)),
+	})
+	f.createScaledObject(oldVersion)
+	f.createPod("api-stopping", map[string]string{config.DefaultVersionLabel: oldVersion}, corev1.PodRunning)
+	// A finalizer keeps the pod in its graceful-termination window after the delete.
+	pod := &corev1.Pod{}
+	if err := f.get("api-stopping", pod); err != nil {
+		t.Fatalf("read the pod: %v", err)
+	}
+	pod.Finalizers = []string{"test.dbos.trustle.com/hold"}
+	if err := k8sClient.Update(f.ctx, pod); err != nil {
+		t.Fatalf("add the finalizer: %v", err)
+	}
+	if err := k8sClient.Delete(f.ctx, pod); err != nil {
+		t.Fatalf("delete the pod: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := f.get("api-stopping", pod); err == nil {
+			pod.Finalizers = nil
+			_ = k8sClient.Update(f.ctx, pod)
+		}
+	})
+
+	f.reconcile(setName)
+
+	if !f.present(kindDeployment, workerName(oldVersion)) {
+		t.Fatal("a version deleted while a terminating pod still carried it")
+	}
+}
+
+func TestAnUnconfiguredPodReaderDeletesNothing(t *testing.T) {
+	f := newFixture(t)
+	f.reconciler.Pods = nil
+	f.createSet(setName, desiredVersion)
+	f.createWorker(setName, oldVersion, 0, map[string]string{
+		DrainedSinceAnnotation: timestamp(now.Add(-2 * time.Hour)),
+	})
+	f.createScaledObject(oldVersion)
+
+	f.reconcile(setName)
+
+	if !f.present(kindDeployment, workerName(oldVersion)) {
+		t.Fatal("a version deleted with no pod reader to check who still carries it")
+	}
+}
+
 func TestAPodListFailureDeletesNothing(t *testing.T) {
 	f := newFixture(t)
 	f.reconciler.Pods = failingReader{}

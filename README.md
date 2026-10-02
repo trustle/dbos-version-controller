@@ -53,10 +53,10 @@ For one set:
 7. Park that version: patch its ScaledObject to `minReplicaCount: 0` with one
    postgresql trigger that counts the same rows. KEDA then scales the version up
    when its own work appears, and back to zero when that work finishes.
-8. Count the live pods in the namespace that carry `<version_label>=<version>`
-   but not `app.kubernetes.io/managed-by=<managed_by>`: pods outside the set
-   that still run that version, such as an API that enqueues work at its own
-   version.
+8. Count the pods in the namespace that carry `<version_label>=<version>` but
+   not `app.kubernetes.io/managed-by=<managed_by>`, and are not `Succeeded` or
+   `Failed`: pods outside the set that still run that version, such as an API
+   that enqueues work at its own version. A terminating pod still counts.
 9. If the version has zero rows, zero worker pods and zero such pods, write the
    drained marker annotation with the current time. If work or a pod returns,
    clear the marker.
@@ -279,9 +279,11 @@ its sets are namespaced.
   row count keeps every object.
 - The controller deletes a version only after zero rows and zero pods for the
   full grace period. Work that returns clears the marker and restarts the clock.
-- A live pod outside the set that carries the version's label holds the version:
-  while it runs, the version is never marked drained or deleted. A pod list the
-  controller cannot read counts as unknown, and deletes nothing.
+- A pod outside the set that carries the version's label holds the version until
+  it reaches a terminal phase, terminating pods included: while it does, the
+  version is never marked drained or deleted. A pod list the controller cannot
+  read, or a reconciler built with no pod reader, counts as unknown and deletes
+  nothing.
 - A rollback to a drained version clears its marker, so the version gets a fresh
   grace period rather than an immediate delete.
 - A failed drain logs, continues with the remaining versions, and reports

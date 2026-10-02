@@ -381,8 +381,9 @@ func (r *WorkerVersionSetReconciler) drain(
 	return entry, nil
 }
 
-// holders counts the live pods in the namespace that carry version in the version label but are
-// not this controller's own worker pods, or returns nil when the count is unknown.
+// holders counts the pods in the namespace that carry version in the version label, are not in a
+// terminal phase, and are not this controller's own worker pods, or returns nil when the count is
+// unknown, including when no pod reader is configured.
 //
 // A producer can enqueue at its own application version: an API pod tags every workflow it starts
 // with the version it was built from. Such a pod keeps writing work for its version until it is
@@ -391,8 +392,8 @@ func (r *WorkerVersionSetReconciler) drain(
 // without the controller having to know which workloads produce work.
 func (r *WorkerVersionSetReconciler) holders(ctx context.Context, version string) *int64 {
 	if r.Pods == nil {
-		zero := int64(0)
-		return &zero
+		log.FromContext(ctx).Info("No pod reader is configured; deleting nothing for this version", "version", version)
+		return nil
 	}
 	selector, err := labels.Parse(fmt.Sprintf("%s=%s,%s!=%s",
 		r.Config.VersionLabel, version, ManagedByLabel, r.Config.ManagedBy))
@@ -411,7 +412,9 @@ func (r *WorkerVersionSetReconciler) holders(ctx context.Context, version string
 	var live int64
 	for index := range pods.Items {
 		pod := &pods.Items[index]
-		if pod.DeletionTimestamp != nil || pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+		// A terminating pod still counts: during graceful shutdown it can finish a request that
+		// enqueues work. Only a pod in a terminal phase no longer holds the version.
+		if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
 			continue
 		}
 		live++
