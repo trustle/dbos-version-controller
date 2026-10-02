@@ -355,7 +355,6 @@ func (f *fixture) createScaledObject(version string) {
 	}
 }
 
-// get reads one object of the fixture's namespace into target.
 // createPod creates one pod in the fixture namespace with the given labels and phase. The
 // envtest API server runs no kubelet, so the phase is written through the status subresource.
 func (f *fixture) createPod(name string, podLabels map[string]string, phase corev1.PodPhase) {
@@ -373,6 +372,7 @@ func (f *fixture) createPod(name string, podLabels map[string]string, phase core
 	}
 }
 
+// get reads one object of the fixture's namespace into target.
 func (f *fixture) get(name string, target client.Object) error {
 	return k8sClient.Get(f.ctx, types.NamespacedName{Namespace: f.namespace, Name: name}, target)
 }

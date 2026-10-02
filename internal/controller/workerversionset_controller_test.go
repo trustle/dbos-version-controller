@@ -25,6 +25,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -414,6 +415,7 @@ func TestOnlyLivePodsOutsideTheSetHoldAVersion(t *testing.T) {
 	f.createScaledObject(oldVersion)
 	// A finished pod, and one of the controller's own worker pods, do not hold the version.
 	f.createPod("api-done", map[string]string{config.DefaultVersionLabel: oldVersion}, corev1.PodSucceeded)
+	f.createPod("api-crashed", map[string]string{config.DefaultVersionLabel: oldVersion}, corev1.PodFailed)
 	f.createPod("worker-own", map[string]string{
 		config.DefaultVersionLabel: oldVersion,
 		ManagedByLabel:             config.DefaultManagedBy,
@@ -422,7 +424,7 @@ func TestOnlyLivePodsOutsideTheSetHoldAVersion(t *testing.T) {
 	f.reconcile(setName)
 
 	if f.present(kindDeployment, workerName(oldVersion)) {
-		t.Fatal("a finished pod or a worker pod of the set kept a drained version alive")
+		t.Fatal("a Succeeded or Failed pod, or a worker pod of the set, kept a drained version alive")
 	}
 }
 
@@ -476,7 +478,7 @@ func TestAnUnconfiguredPodReaderDeletesNothing(t *testing.T) {
 	}
 }
 
-func TestAPodListFailureDeletesNothing(t *testing.T) {
+func TestAPodListFailureDeletesNothingAndReportsPodsUnavailable(t *testing.T) {
 	f := newFixture(t)
 	f.reconciler.Pods = failingReader{}
 	f.createSet(setName, desiredVersion)
@@ -489,6 +491,30 @@ func TestAPodListFailureDeletesNothing(t *testing.T) {
 
 	if !f.present(kindDeployment, workerName(oldVersion)) {
 		t.Fatal("a version deleted while the pods that carry it could not be listed")
+	}
+	ready := f.ready(setName)
+	if ready.Reason != ReasonPodsUnavailable || ready.Status != metav1.ConditionFalse {
+		t.Fatalf("the Ready condition is %s/%s", ready.Status, ready.Reason)
+	}
+	if !strings.Contains(ready.Message, oldVersion) {
+		t.Fatalf("the Ready message %q does not name the version", ready.Message)
+	}
+}
+
+func TestAPodInAnotherNamespaceDoesNotHoldAVersion(t *testing.T) {
+	f := newFixture(t)
+	other := newFixture(t)
+	f.createSet(setName, desiredVersion)
+	f.createWorker(setName, oldVersion, 0, map[string]string{
+		DrainedSinceAnnotation: timestamp(now.Add(-2 * time.Hour)),
+	})
+	f.createScaledObject(oldVersion)
+	other.createPod("api-elsewhere", map[string]string{config.DefaultVersionLabel: oldVersion}, corev1.PodRunning)
+
+	f.reconcile(setName)
+
+	if f.present(kindDeployment, workerName(oldVersion)) {
+		t.Fatal("a pod in another namespace held a drained version")
 	}
 }
 

@@ -193,7 +193,9 @@ status:
 - `outstanding` is reported for every version, including `Current`, and is
   absent only when the database was unreachable.
 - The `Ready` reason is `Reconciled`, `InvalidSpec`, `DatabaseUnavailable`,
-  `DrainFailed` or `ReconcileError`. `DatabaseUnavailable` takes precedence
+  `PodsUnavailable`, `DrainFailed` or `ReconcileError`. `PodsUnavailable` names
+  the versions whose holder pods could not be counted, so nothing was deleted for
+  them; `DatabaseUnavailable` takes precedence over it. `DatabaseUnavailable` takes precedence
   over `DrainFailed` when both apply, since it explains any drain failure that
   follows from it.
 

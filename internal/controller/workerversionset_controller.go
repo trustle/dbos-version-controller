@@ -175,6 +175,7 @@ func (r *WorkerVersionSetReconciler) reconcileSet(
 	desired := versionStatus(version, dbosv1alpha1.PhaseCurrent, image, 0, currentRows)
 	var draining []dbosv1alpha1.VersionStatus
 	var failedDrains []string
+	var unknownHolders []string
 
 	for index := range managed {
 		deployment := managed[index]
@@ -192,7 +193,13 @@ func (r *WorkerVersionSetReconciler) reconcileSet(
 		}
 
 		rows := count(deployment.Version)
-		holders := r.holders(ctx, deployment.Version)
+		// With the row count unknown nothing is deleted anyway, so skip the pod list.
+		var holders *int64
+		if rows != nil {
+			if holders = r.holders(ctx, deployment.Version); holders == nil {
+				unknownHolders = append(unknownHolders, deployment.Version)
+			}
+		}
 		entry, err := r.drain(ctx, set, deployment, templateScaledObject, rows, holders, now, grace)
 		if err != nil {
 			logger.Error(err, "Failed to drain worker version; continuing with the remaining versions",
@@ -204,12 +211,17 @@ func (r *WorkerVersionSetReconciler) reconcileSet(
 
 	versions := append([]dbosv1alpha1.VersionStatus{desired}, draining...)
 
-	// DatabaseUnavailable takes precedence over DrainFailed: an unreachable database explains
-	// every drain failure that follows from it, and is the more actionable cause.
+	// DatabaseUnavailable takes precedence over PodsUnavailable and DrainFailed: an unreachable
+	// database explains every drain failure that follows from it, and is the more actionable cause.
+	// PodsUnavailable comes next: a missing pod grant stops every delete, silently otherwise.
 	switch {
 	case !databaseAvailable:
 		r.report(ctx, set, now, versions, metav1.ConditionFalse, ReasonDatabaseUnavailable,
 			"Cannot count outstanding workflows; deleted nothing this tick")
+	case len(unknownHolders) > 0:
+		r.report(ctx, set, now, versions, metav1.ConditionFalse, ReasonPodsUnavailable,
+			fmt.Sprintf("Cannot count the pods that carry version(s) %s; deleted nothing for them",
+				strings.Join(unknownHolders, ", ")))
 	case len(failedDrains) > 0:
 		r.report(ctx, set, now, versions, metav1.ConditionFalse, ReasonDrainFailed,
 			fmt.Sprintf("Failed to drain version(s): %s", strings.Join(failedDrains, ", ")))

@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## Unreleased
 
 - A version stays while a live pod outside the set carries its version label. An application whose API enqueues work at its own build's version keeps writing work for that version until its API pods are replaced, so a version whose workers drained can still receive work. The controller counts the namespace's live pods that carry `<DVC_VERSION_LABEL>=<version>` but not `app.kubernetes.io/managed-by=<DVC_MANAGED_BY>`, and treats any such pod that is not `Succeeded` or `Failed` like an outstanding workflow: the version is not marked drained, and is never deleted. A terminating pod still counts. An unreadable pod list, or a reconciler built with no pod reader, deletes nothing.
+- A pod count the controller cannot read reports `Ready=False` with the new reason `PodsUnavailable`, naming the versions it could not count. `DatabaseUnavailable` still takes precedence.
+- `DVC_VERSION_LABEL` must be a valid label key and `DVC_MANAGED_BY` a non-empty valid label value; the controller refuses to start otherwise, because both go into the holder selector.
 - The Role gains `list` on `pods`. Grant it before upgrading: without it every pod count is unknown, and the controller deletes no drained version.
 
 ## 0.3.0 — Rewritten in Go with kubebuilder; CRD contract unchanged
