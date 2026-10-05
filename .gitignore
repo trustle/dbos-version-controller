@@ -31,3 +31,6 @@ go.work
 
 # Local cluster scratch space
 .k3s/
+
+# Registry token the release build writes
+.registry-token

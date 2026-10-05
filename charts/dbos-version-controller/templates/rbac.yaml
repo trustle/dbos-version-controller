@@ -1,0 +1,32 @@
+{{- if .Values.rbac.create }}
+{{- /*
+  The rules come from config/rbac/role.yaml, which controller-gen writes from the
+  +kubebuilder:rbac markers on the reconciler. make manifests copies that file into files/.
+*/}}
+{{- $role := .Files.Get "files/role.yaml" | fromYaml }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "dvc.fullname" . }}
+  namespace: {{ include "dvc.watchNamespace" . }}
+  labels:
+    {{- include "dvc.labels" . | nindent 4 }}
+rules:
+  {{- toYaml $role.rules | nindent 2 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "dvc.fullname" . }}
+  namespace: {{ include "dvc.watchNamespace" . }}
+  labels:
+    {{- include "dvc.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "dvc.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "dvc.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

@@ -29,11 +29,31 @@ jobs:
 
       - name: Check the generated files are committed
         run: |
-          git add -N config crd api
-          git diff --exit-code -- config crd api || {
+          git add -N config crd api charts
+          git diff --exit-code -- config crd api charts || {
             echo "Run 'make manifests generate' and commit the result." >&2
             exit 1
           }
+
+  chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The Helm version Argo CD v3.1.8 renders with, so a chart that passes here renders there.
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.18.4
+
+      - name: Lint and render the chart
+        run: make chart-lint
 
   lint:
     runs-on: ubuntu-latest

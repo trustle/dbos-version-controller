@@ -5,6 +5,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## 0.4.0 — Helm chart and release pipeline; a version stays while another pod carries it
+
+- New Helm chart in `charts/dbos-version-controller`. It holds the CRD (on by default, behind `crds.install`; it carries Helm's `resource-policy: keep` and Argo CD's `Prune=false,Delete=false`, so neither tool deletes it), the namespaced ServiceAccount, Role and RoleBinding, the Deployment and an optional ExternalSecret for the database URL. Each `DVC_` setting is one value. `make manifests` copies the CRD and `config/rbac/role.yaml` into the chart, so the chart's Role always matches the reconciler's markers. The Deployment selector holds only `app.kubernetes.io/name=<full name>`, so a release with `fullnameOverride` can adopt an existing Deployment of that name.
+- The e2e suite installs the controller through the chart instead of `make deploy`.
+- Releases are cut from tags. A `vX.Y.Z` tag runs the Cloud Build trigger `trg-dbos-version-controller-release` with `cloudbuild-release.yaml`. It pushes the image as `X.Y.Z` and the chart to `oci://us-docker.pkg.dev/trustle-core-cicd/charts`. The build fails unless the tag equals the chart's `version` and `appVersion`.
 - A version stays while a live pod outside the set carries its version label. An application whose API enqueues work at its own build's version keeps writing work for that version until its API pods are replaced, so a version whose workers drained can still receive work. The controller counts the namespace's live pods that carry `<DVC_VERSION_LABEL>=<version>` but not `app.kubernetes.io/managed-by=<DVC_MANAGED_BY>`, and treats any such pod that is not `Succeeded` or `Failed` like an outstanding workflow: the version is not marked drained, and is never deleted. A terminating pod still counts. An unreadable pod list, or a reconciler built with no pod reader, deletes nothing.
 - A pod count the controller cannot read reports `Ready=False` with the new reason `PodsUnavailable`, naming the versions it could not count. `DatabaseUnavailable` still takes precedence.
 - `DVC_VERSION_LABEL` must be a valid label key and `DVC_MANAGED_BY` a non-empty valid label value; the controller refuses to start otherwise, because both go into the holder selector.

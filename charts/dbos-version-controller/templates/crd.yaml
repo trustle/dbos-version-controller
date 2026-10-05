@@ -1,0 +1,16 @@
+{{- if .Values.crds.install }}
+{{- $crd := .Files.Get "files/dbos.trustle.com_workerversionsets.yaml" | fromYaml }}
+{{- if .Values.crds.keep }}
+{{- /*
+  Deleting the CRD deletes every WorkerVersionSet, and then the controller stops managing the
+  worker objects. Helm honours resource-policy: keep. Argo CD ignores it, so the CRD also carries
+  Argo's Prune=false and Delete=false: Argo neither prunes the CRD when it leaves the manifests nor
+  deletes it with the Application. This also lets another Application hand the CRD over without
+  deleting it.
+*/}}
+{{- $keep := dict "helm.sh/resource-policy" "keep" "argocd.argoproj.io/sync-options" "Prune=false,Delete=false" }}
+{{- $_ := set $crd.metadata "annotations" (merge $keep ($crd.metadata.annotations | default dict)) }}
+{{- end }}
+---
+{{ toYaml $crd }}
+{{- end }}

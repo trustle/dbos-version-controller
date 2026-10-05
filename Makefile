@@ -1,5 +1,7 @@
 # Image URL to use all building/pushing image targets
 IMG ?= controller:latest
+# CHART is the Helm chart that ships the controller.
+CHART ?= charts/dbos-version-controller
 # YEAR defines the year value used for substituting the YEAR placeholder in the boilerplate header.
 YEAR ?= $(shell date +%Y)
 
@@ -46,8 +48,11 @@ help: ## Display this help.
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
 	"$(CONTROLLER_GEN)" rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
-	@# The Helm chart copies the CRD from crd/. Keep that path identical to the generated file.
+	@# crd/ is the stable path that other repositories copy the CRD from. Keep it identical to the generated file.
 	cp config/crd/bases/dbos.trustle.com_workerversionsets.yaml crd/dbos.trustle.com_workerversionsets.yaml
+	@# Helm reads only files inside the chart, so the chart carries its own copies of the CRD and the RBAC rules.
+	cp config/crd/bases/dbos.trustle.com_workerversionsets.yaml $(CHART)/files/dbos.trustle.com_workerversionsets.yaml
+	cp config/rbac/role.yaml $(CHART)/files/role.yaml
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
@@ -72,8 +77,8 @@ setup-test-e2e: kind ## Create the kind cluster the e2e suite runs against, unle
 	@# Write the cluster's own kubeconfig. --kubeconfig above keeps create from touching the
 	@# developer's ~/.kube/config and switching its current context; this line covers the reuse
 	@# path, where create does not run at all and nothing would otherwise point the suite at this
-	@# cluster. Either way E2E_KUBECONFIG is what test-e2e exports, so every kubectl call, the
-	@# nested make deploy and the suite's own client resolve this cluster and no other.
+	@# cluster. Either way E2E_KUBECONFIG is what test-e2e exports, so every kubectl and helm call
+	@# and the suite's own client resolve this cluster and no other.
 	@"$(KIND)" export kubeconfig --name $(KIND_CLUSTER) --kubeconfig "$(E2E_KUBECONFIG)"
 
 .PHONY: cleanup-test-e2e
@@ -85,10 +90,10 @@ cleanup-test-e2e: kind ## Delete the e2e kind cluster.
 
 .PHONY: test-e2e
 test-e2e: manifests generate fmt vet ## Run the e2e suite against a kind cluster, then delete it.
-	@# The suite builds the image, loads it into the node, deploys config/default and drives one
+	@# The suite builds the image, loads it into the node, installs the Helm chart and drives one
 	@# WorkerVersionSet. It collects the controller's logs itself when a spec fails, because the
 	@# cluster is gone by the time the failure is read.
-	@# KUBECONFIG pins every kubectl call, the nested make deploy and the suite's own client to
+	@# KUBECONFIG pins every kubectl and helm call and the suite's own client to
 	@# this cluster, so the suite cannot deploy into whatever context happens to be current.
 	@# SHELLFLAGS carries -e, so the test result is captured rather than left to abort the recipe.
 	@# Otherwise a failing suite would leave the cluster behind.
@@ -97,10 +102,18 @@ test-e2e: manifests generate fmt vet ## Run the e2e suite against a kind cluster
 	@# kubeconfig export itself — would otherwise abort make before cleanup and leave the cluster
 	@# behind. A failing setup skips the suite and carries its own status out.
 	$(MAKE) setup-test-e2e \
-		&& KUBECONFIG="$(E2E_KUBECONFIG)" KIND="$(KIND)" KIND_CLUSTER="$(KIND_CLUSTER)" \
+		&& KUBECONFIG="$(E2E_KUBECONFIG)" KIND="$(KIND)" HELM="$(HELM)" KIND_CLUSTER="$(KIND_CLUSTER)" \
 			go test ./test/e2e/ -v -ginkgo.v -timeout 25m \
 		&& status=0 || status=$$?; \
 		$(MAKE) cleanup-test-e2e; exit $$status
+
+.PHONY: chart-lint
+chart-lint: manifests ## Lint the Helm chart and render it with the defaults and with every option set.
+	$(HELM) lint --strict $(CHART) --set databaseUrl.secretName=dbos-database
+	$(HELM) template dbos-version-controller $(CHART) --namespace dbos-workers \
+		--set databaseUrl.secretName=dbos-database > /dev/null
+	$(HELM) template dbos-version-controller $(CHART) --namespace dbos-workers \
+		--values $(CHART)/ci/all-values.yaml > /dev/null
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
@@ -194,6 +207,7 @@ $(LOCALBIN):
 
 ## Tool Binaries
 KUBECTL ?= kubectl
+HELM ?= helm
 KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest

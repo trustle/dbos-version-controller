@@ -1,0 +1,65 @@
+# Sets every option, in the shape London uses: a Workload Identity service account, the database
+# URL from an ExternalSecret and a cloud-sql-proxy sidecar. make chart-lint renders it.
+fullnameOverride: london-worker-controller
+image:
+  tag: "0.4.0"
+controller:
+  namespace: london
+  dryRun: true
+  graceSeconds: 0
+  intervalSeconds: 30
+  managedBy: london-version-controller
+  versionLabel: dbos-app-version
+  logLevel: debug
+databaseUrl:
+  secretName: london-dbos-system-database-url
+  secretKey: url
+  externalSecret:
+    enabled: true
+    secretStoreRef:
+      name: gcp-secret-manager
+    remoteKey: staging-london-dbos-system-database-url
+serviceAccount:
+  annotations:
+    iam.gke.io/gcp-service-account: example@example-project.iam.gserviceaccount.com
+podLabels:
+  team: platform
+podAnnotations:
+  example.com/note: ci
+podSecurityContext:
+  runAsUser: 1000
+  runAsNonRoot: true
+  fsGroup: 1000
+initContainers:
+  - name: cloud-sql-proxy
+    restartPolicy: Always
+    image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.21.1
+    args:
+      - --port=5432
+      - --private-ip
+      - --auto-iam-authn
+      - example-project:us-central1:example-instance
+extraContainers:
+  - name: sidecar
+    image: busybox:1.37
+extraEnv:
+  - name: EXTRA
+    value: "1"
+extraVolumes:
+  - name: tmp
+    emptyDir: {}
+extraVolumeMounts:
+  - name: tmp
+    mountPath: /tmp
+nodeSelector:
+  workload: london
+tolerations:
+  - key: workload
+    operator: Equal
+    value: london
+    effect: NoSchedule
+affinity:
+  nodeAffinity: {}
+priorityClassName: high
+imagePullSecrets:
+  - name: pull
