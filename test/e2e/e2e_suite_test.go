@@ -157,15 +157,21 @@ var _ = ReportAfterSuite("controller logs", func(report Report) {
 })
 
 // crdInstallable reports whether the chart may render the WorkerVersionSet CRD. A reused cluster
-// can hold a CRD that an older suite applied with kubectl. Helm refuses to adopt an object that
-// carries no release metadata, so the chart then leaves the existing CRD alone.
+// can hold a CRD that an older suite applied with kubectl, or that another release owns. Helm
+// refuses to adopt an object unless its release name, release namespace and managed-by label all
+// match this release, so the chart then leaves the existing CRD alone.
 func crdInstallable() bool {
 	GinkgoHelper()
-	out, err := run("kubectl", "get", "crd", "workerversionsets.dbos.trustle.com",
-		"--ignore-not-found", "-o", "jsonpath={.metadata.name}/{.metadata.annotations.meta\\.helm\\.sh/release-name}")
+	out, err := run("kubectl", "get", "crd", "workerversionsets.dbos.trustle.com", "--ignore-not-found",
+		"-o", `jsonpath={.metadata.name}|{.metadata.annotations.meta\.helm\.sh/release-name}|`+
+			`{.metadata.annotations.meta\.helm\.sh/release-namespace}|{.metadata.labels.app\.kubernetes\.io/managed-by}`)
 	Expect(err).NotTo(HaveOccurred())
-	name, release, _ := strings.Cut(strings.TrimSpace(out), "/")
-	return name == "" || release == controllerDeployment
+	fields := strings.Split(strings.TrimSpace(out), "|")
+	if fields[0] == "" {
+		return true
+	}
+	Expect(fields).To(HaveLen(4), "unexpected CRD metadata %q", out)
+	return fields[1] == controllerDeployment && fields[2] == controllerNamespace && fields[3] == "Helm"
 }
 
 // applyCreated runs one `kubectl create` client-side and applies the result, so the step is
