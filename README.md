@@ -269,10 +269,10 @@ helm install dbos-version-controller charts/dbos-version-controller \
 kubectl apply -f examples/workerversionset.yaml
 ```
 
-The CRD is cluster-scoped, so install it once per cluster. Set
-`crds.install=false` when the CRD comes from somewhere else, for example when an
-Argo CD project does not allow `CustomResourceDefinition`. The controller and
-its sets are namespaced.
+The chart ships the CRD, so the schema and the controller that reads it change
+together. The CRD is cluster-scoped, so install the chart once per cluster.
+Neither Helm nor Argo CD deletes the CRD, because deleting it deletes every
+WorkerVersionSet. The controller and its sets are namespaced.
 
 The kubebuilder layout under `config/` stays as a cluster-scoped alternative:
 

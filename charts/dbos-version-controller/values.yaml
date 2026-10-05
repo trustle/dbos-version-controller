@@ -15,10 +15,11 @@ image:
 imagePullSecrets: []
 
 crds:
-  # -- Render the WorkerVersionSet CRD. Set false when the CRD comes from somewhere else, for
-  # example when the Argo CD project does not allow CustomResourceDefinition.
+  # -- Render the WorkerVersionSet CRD, so it ships with the controller that reads it. Set false
+  # only when the CRD comes from somewhere else.
   install: true
-  # -- Keep the CRD when the release is deleted. Deleting the CRD deletes every WorkerVersionSet.
+  # -- Keep the CRD when the release or the Argo CD Application is deleted, or when the CRD leaves
+  # the manifests. Deleting the CRD deletes every WorkerVersionSet.
   keep: true
 
 # The controller settings. Each one sets one DVC_ environment variable. The defaults are the

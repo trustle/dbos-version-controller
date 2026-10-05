@@ -38,10 +38,15 @@ Each `DVC_` setting is one value. The defaults are the controller's own defaults
 
 ## Notes
 
-- **CRD.** The CRD is cluster-scoped. Install it once per cluster. Set
-  `crds.install=false` when it comes from somewhere else. With `crds.keep=true`,
-  the default, Helm keeps the CRD when you delete the release, because deleting
-  the CRD deletes every WorkerVersionSet.
+- **CRD.** The chart ships the CRD by default, so the schema and the
+  controller that reads it change together. The CRD is cluster-scoped, so
+  install the chart once per cluster with `crds.install=true`, and set it to
+  `false` only when the CRD comes from somewhere else. With `crds.keep=true`,
+  the default, the CRD carries `helm.sh/resource-policy: keep` and Argo CD's
+  `Prune=false,Delete=false`. Neither Helm nor Argo CD then deletes it, because
+  deleting the CRD deletes every WorkerVersionSet. To remove it, delete it by
+  hand. With Argo CD, the Application's AppProject must allow
+  `apiextensions.k8s.io/CustomResourceDefinition`.
 - **RBAC.** The Role rules come from `config/rbac/role.yaml`, which
   controller-gen writes from the reconciler's markers. `make manifests` copies
   that file into `files/`. Do not edit the copy.

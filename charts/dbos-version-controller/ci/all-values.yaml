@@ -3,8 +3,6 @@
 fullnameOverride: london-worker-controller
 image:
   tag: "0.4.0"
-crds:
-  install: false
 controller:
   namespace: london
   dryRun: true
