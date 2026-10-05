@@ -15,7 +15,8 @@
 
 - The Go toolchain, at the version in `go.mod`.
 - GNU Make.
-- Docker, for `make docker-build` only.
+- Docker, for `make docker-build` and `make test-e2e`.
+- Helm 3, for `make chart-lint` and `make test-e2e`. CI uses v3.18.4, the version Argo CD v3.1.8 renders with.
 
 `make` downloads every other tool it needs into `bin/`, which is gitignored.
 That includes `controller-gen`, `kustomize`, `golangci-lint` and

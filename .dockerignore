@@ -9,3 +9,4 @@ examples
 test
 *.md
 !README.md
+charts

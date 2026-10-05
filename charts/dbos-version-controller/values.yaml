@@ -1,0 +1,112 @@
+# Default values for dbos-version-controller.
+
+# -- Replaces the chart name in the object names.
+nameOverride: ""
+# -- Replaces the full object name. The Deployment, ServiceAccount, Role and RoleBinding all use
+# it. The Deployment selector also uses it and cannot change after the first install.
+fullnameOverride: ""
+
+image:
+  repository: us.gcr.io/trustle-core-cicd/dbos-version-controller
+  # -- Defaults to the chart's appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+crds:
+  # -- Render the WorkerVersionSet CRD. Set false when the CRD comes from somewhere else, for
+  # example when the Argo CD project does not allow CustomResourceDefinition.
+  install: true
+  # -- Keep the CRD when the release is deleted. Deleting the CRD deletes every WorkerVersionSet.
+  keep: true
+
+# The controller settings. Each one sets one DVC_ environment variable. The defaults are the
+# controller's own defaults.
+controller:
+  # -- DVC_NAMESPACE: the namespace holding the WorkerVersionSets and the worker objects. Empty
+  # means the release namespace. The Role and RoleBinding go into this namespace.
+  namespace: ""
+  # -- DVC_DRY_RUN: log every write to a worker object as "Would ..." and change nothing.
+  dryRun: false
+  # -- DVC_GRACE_SECONDS: default time a drained version stays idle before deletion.
+  graceSeconds: 600
+  # -- DVC_INTERVAL_SECONDS: time between reconciles of one set.
+  intervalSeconds: 30
+  # -- DVC_MANAGED_BY: value of the app.kubernetes.io/managed-by label on the worker objects.
+  managedBy: dbos-version-controller
+  # -- DVC_VERSION_LABEL: label carrying the application version. The controller pod must not
+  # carry it, because a pod with this label holds its version.
+  versionLabel: dbos-app-version
+  # -- DVC_LOG_LEVEL: level of the root logger.
+  logLevel: info
+
+# DVC_DATABASE_URL comes from a Secret. The image has no shell, so it cannot read the URL from a
+# mounted file.
+databaseUrl:
+  # -- Name of the Secret holding the DBOS system database URL. Required.
+  secretName: ""
+  # -- Key in that Secret.
+  secretKey: url
+  # Render an ExternalSecret that writes the Secret above from a secret store.
+  externalSecret:
+    enabled: false
+    apiVersion: external-secrets.io/v1beta1
+    refreshInterval: 1h
+    secretStoreRef:
+      kind: ClusterSecretStore
+      name: ""
+    # -- Key of the remote secret. It must hold only the URL.
+    remoteKey: ""
+
+serviceAccount:
+  create: true
+  # -- Defaults to the full name.
+  name: ""
+  # -- For example iam.gke.io/gcp-service-account for GKE Workload Identity.
+  annotations: {}
+
+rbac:
+  # -- Render the namespaced Role and RoleBinding. The rules come from config/rbac/role.yaml.
+  create: true
+
+# -- Labels added to the controller pod. It must not include controller.versionLabel.
+podLabels: {}
+podAnnotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
+
+# -- Init containers, including native sidecars (restartPolicy: Always) such as cloud-sql-proxy.
+initContainers: []
+# -- More containers in the controller pod.
+extraContainers: []
+# -- More environment variables for the controller container.
+extraEnv: []
+extraVolumes: []
+extraVolumeMounts: []
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+priorityClassName: ""
+
+revisionHistoryLimit: 3
+terminationGracePeriodSeconds: 10

@@ -18,8 +18,9 @@ limitations under the License.
 //
 // The envtest suite in internal/controller covers the reconcile logic against an API server, but
 // it stubs the workflow counter and it never builds the image. This suite closes both gaps: it
-// deploys the image the Dockerfile produces, points it at a Postgres holding dbos.workflow_status,
-// and drives one WorkerVersionSet through a version change and a deletion.
+// installs the image the Dockerfile produces through the Helm chart, points it at a Postgres
+// holding dbos.workflow_status, and drives one WorkerVersionSet through a version change and a
+// deletion.
 //
 // It installs the KEDA ScaledObject CRD and not KEDA itself. The controller creates and patches
 // ScaledObjects; it never reads what KEDA does with them, and nothing in the reconcile loop waits
@@ -32,7 +33,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -52,9 +52,12 @@ import (
 const (
 	// workerNamespace holds the WorkerVersionSet, the worker objects and the Postgres.
 	workerNamespace = "dbos-workers"
-	// controllerNamespace and controllerDeployment are what config/default renders.
-	controllerNamespace  = "dbos-version-controller-system"
-	controllerDeployment = "dbos-version-controller-controller-manager"
+	// controllerNamespace holds the Helm release. It is not workerNamespace, so the suite also
+	// checks that the chart puts the Role into the namespace the controller watches.
+	controllerNamespace = "dbos-version-controller-system"
+	// controllerDeployment is the chart's full name for the release of the same name.
+	controllerDeployment = "dbos-version-controller"
+	chart                = "charts/dbos-version-controller"
 
 	// image is built from the repository's Dockerfile and loaded into the kind node.
 	image = "dbos-version-controller:e2e"
@@ -84,6 +87,7 @@ var (
 	scheme   = runtime.NewScheme()
 	k8s      client.Client
 	kindPath = envOr("KIND", "kind")
+	helmPath = envOr("HELM", "helm")
 	cluster  = envOr("KIND_CLUSTER", "dbos-version-controller-test-e2e")
 )
 
@@ -100,10 +104,9 @@ var _ = BeforeSuite(func() {
 	mustRun("make", "docker-build", "IMG="+image)
 	mustRun(kindPath, "load", "docker-image", image, "--name", cluster)
 
-	By("installing the CRDs")
-	mustRun("make", "install")
+	By("installing the KEDA ScaledObject CRD")
 	// The controller writes ScaledObjects, so their definition must exist. This is the same
-	// KEDA 2.17.2 document the envtest suite installs.
+	// KEDA 2.17.2 document the envtest suite installs. The chart installs the WorkerVersionSet CRD.
 	mustRun("kubectl", "apply", "-f", "test/crds/keda.sh_scaledobjects.yaml")
 
 	By("starting the DBOS system database")
@@ -112,22 +115,24 @@ var _ = BeforeSuite(func() {
 	mustRun("kubectl", "rollout", "status", "-n", workerNamespace,
 		"deployment/dbos-database", "--timeout=3m")
 
-	By("deploying the controller")
+	By("installing the controller with the Helm chart")
 	applyCreated("namespace", controllerNamespace)
 	applyCreated("secret", "generic", "dbos-database",
 		"-n", controllerNamespace,
 		"--from-literal=system-database-url="+
 			"postgresql://dbos:dbos@dbos-database."+workerNamespace+".svc:5432/dbos?sslmode=disable")
-	// make deploy writes the image into config/manager/kustomization.yaml, which is tracked. Put
-	// it back when the suite ends, so a local run leaves the working tree as it found it.
-	preserve("config/manager/kustomization.yaml")
-	mustRun("make", "deploy", "IMG="+image)
-	// config/default keeps the production defaults. A half-minute reconcile interval would make
-	// every spec wait for it.
-	mustRun("kubectl", "set", "env", "-n", controllerNamespace,
-		"deployment/"+controllerDeployment, "DVC_INTERVAL_SECONDS="+interval)
-	mustRun("kubectl", "rollout", "status", "-n", controllerNamespace,
-		"deployment/"+controllerDeployment, "--timeout=3m")
+	repository, tag, _ := strings.Cut(image, ":")
+	// The chart's default reconcile interval is half a minute, which would make every spec wait
+	// for it.
+	mustRun(helmPath, "upgrade", "--install", controllerDeployment, chart,
+		"--namespace", controllerNamespace,
+		"--set", "image.repository="+repository,
+		"--set", "image.tag="+tag,
+		"--set", "controller.namespace="+workerNamespace,
+		"--set", "controller.intervalSeconds="+interval,
+		"--set", "databaseUrl.secretName=dbos-database",
+		"--set", "databaseUrl.secretKey=system-database-url",
+		"--wait", "--timeout", "3m")
 
 	var err error
 	k8s, err = client.New(ctrl.GetConfigOrDie(), client.Options{Scheme: scheme})
@@ -148,17 +153,6 @@ var _ = ReportAfterSuite("controller logs", func(report Report) {
 	}
 	AddReportEntry("controller logs", out)
 })
-
-// preserve restores one tracked file when the suite ends.
-func preserve(path string) {
-	GinkgoHelper()
-	full := filepath.Join(repoRoot, path)
-	original, err := os.ReadFile(full)
-	Expect(err).NotTo(HaveOccurred())
-	DeferCleanup(func() {
-		Expect(os.WriteFile(full, original, 0o644)).To(Succeed())
-	})
-}
 
 // applyCreated runs one `kubectl create` client-side and applies the result, so the step is
 // idempotent. A reused cluster — one left behind by an interrupted run — would otherwise fail the

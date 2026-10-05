@@ -24,6 +24,11 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # The suite installs the controller with the Helm chart.
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.18.4
+
       # make test-e2e creates the kind cluster itself, with the kind version pinned in the
       # Makefile, so a local run and this job use the same one.
       - name: Run the e2e suite on kind

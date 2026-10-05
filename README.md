@@ -91,8 +91,8 @@ flowchart TD
 The controller reads every `WorkerVersionSet` in `DVC_NAMESPACE`. It writes only
 their status subresource, never their spec. Install the definition from
 `crd/dbos.trustle.com_workerversionsets.yaml`. That file is the output of
-`make manifests`, copied to a stable path the Helm chart reads. Do not edit it
-by hand; edit `api/v1alpha1/workerversionset_types.go` and run `make manifests`.
+`make manifests`, copied to a stable path that other repositories read. The chart
+carries its own copy. Do not edit either by hand; edit `api/v1alpha1/workerversionset_types.go` and run `make manifests`.
 
 ```yaml
 apiVersion: dbos.trustle.com/v1alpha1
@@ -255,23 +255,32 @@ a ServiceAccount, a RoleBinding and a Deployment.
 
 ## Install
 
-The kubebuilder layout under `config/` is the full install:
+The Helm chart in `charts/dbos-version-controller` is the supported install. It
+holds the CRD, the namespaced RBAC, the Deployment and, optionally, an
+ExternalSecret for the database URL. Each `DVC_` setting is one value. See
+[the chart README](charts/dbos-version-controller/README.md).
 
 ```bash
-make install                                  # the CRD only
-make deploy IMG=registry.example.com/dbos-version-controller:0.3.0
-```
-
-The smaller namespaced alternative:
-
-```bash
-kubectl apply -f crd/
-kubectl apply -f examples/controller.yaml
+kubectl create secret generic dbos-database -n dbos-workers \
+  --from-literal=url=postgresql://user:pass@host:5432/dbos_sys
+helm install dbos-version-controller charts/dbos-version-controller \
+  --namespace dbos-workers --set databaseUrl.secretName=dbos-database
 kubectl apply -f examples/workerversionset.yaml
 ```
 
-The CRD is cluster-scoped, so install it once per cluster. The controller and
+The CRD is cluster-scoped, so install it once per cluster. Set
+`crds.install=false` when the CRD comes from somewhere else, for example when an
+Argo CD project does not allow `CustomResourceDefinition`. The controller and
 its sets are namespaced.
+
+The kubebuilder layout under `config/` stays as a cluster-scoped alternative:
+
+```bash
+make install                                  # the CRD only
+make deploy IMG=registry.example.com/dbos-version-controller:0.4.0
+```
+
+`examples/controller.yaml` holds the same objects as plain manifests.
 
 ## Safety rules
 
@@ -324,6 +333,7 @@ make manifests generate fmt vet   # regenerate the CRD, the RBAC and the deepcop
 make test                         # envtest suite, and coverage in cover.out
 make test-e2e                     # end-to-end suite, against a kind cluster
 make lint                         # golangci-lint
+make chart-lint                   # lint the Helm chart and render it
 make docker-build IMG=...         # the controller image
 ```
 
@@ -334,15 +344,15 @@ copy is a test fixture, and the `.dockerignore` keeps it out of the image.
 
 ### The end-to-end suite
 
-`make test-e2e` runs `test/e2e` against a real cluster. It needs Docker and
-`kubectl`: the target downloads `kind` itself, creates a cluster, and deletes
+`make test-e2e` runs `test/e2e` against a real cluster. It needs Docker,
+`kubectl` and Helm: the target downloads `kind` itself, creates a cluster, and deletes
 it again when the suite ends, whether the suite passed or failed, but the suite
-drives the cluster through `kubectl` and does not install it. The cluster keeps
+drives the cluster through `kubectl` and `helm` and does not install them. The cluster keeps
 its own kubeconfig under `bin/`, so a run leaves your current context alone.
 `make test` excludes this package, because it needs that cluster.
 
 The suite covers what envtest cannot. It builds the image from the Dockerfile
-and loads it into the node, deploys `config/default`, and points the controller
+and loads it into the node, installs the Helm chart, and points the controller
 at a Postgres carrying `dbos.workflow_status`. It then drives one
 WorkerVersionSet through a version change, and takes the three deletion gates
 one at a time: the parked version survives on its running pod alone with no
@@ -358,8 +368,10 @@ Deployment itself. The GitHub Actions job in `.github/workflows/e2e.yml` runs
 the same `make test-e2e` on every pull request.
 
 `make manifests` also copies the generated CRD to
-`crd/dbos.trustle.com_workerversionsets.yaml`, because the Helm chart reads that
-path verbatim. Commit both copies.
+`crd/dbos.trustle.com_workerversionsets.yaml`, and copies the CRD and
+`config/rbac/role.yaml` into `charts/dbos-version-controller/files/`. The chart
+renders its Role from that copy, so the Role always matches the markers. Commit
+every copy. CI fails when one is stale.
 
 ## Roadmap
 

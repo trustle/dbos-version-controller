@@ -1,0 +1,8 @@
+{{- if .Values.crds.install }}
+{{- $crd := .Files.Get "files/dbos.trustle.com_workerversionsets.yaml" | fromYaml }}
+{{- if .Values.crds.keep }}
+{{- $_ := set $crd.metadata "annotations" (merge (dict "helm.sh/resource-policy" "keep") ($crd.metadata.annotations | default dict)) }}
+{{- end }}
+---
+{{ toYaml $crd }}
+{{- end }}

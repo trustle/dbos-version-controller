@@ -1,0 +1,10 @@
+apiVersion: v2
+name: dbos-version-controller
+description: Runs one worker Deployment per DBOS application version and removes a version only after it has no work left.
+type: application
+# The release tag vX.Y.Z publishes this chart and the image. Both versions must equal X.Y.Z.
+version: 0.4.0
+appVersion: "0.4.0"
+home: https://github.com/trustle/dbos-version-controller
+sources:
+  - https://github.com/trustle/dbos-version-controller

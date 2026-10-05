@@ -1,0 +1,121 @@
+{{- $versionLabel := .Values.controller.versionLabel }}
+{{- if hasKey .Values.podLabels $versionLabel }}
+{{- fail (printf "podLabels must not include %q: a pod with the version label holds that version, so the controller would never delete it" $versionLabel) }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "dvc.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "dvc.labels" . | nindent 4 }}
+spec:
+  # Two controllers reconciling the same set fight each other. Run one, and stop the old pod
+  # before the new one starts.
+  replicas: 1
+  strategy:
+    type: Recreate
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
+  selector:
+    matchLabels:
+      {{- include "dvc.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "dvc.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: controller
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "dvc.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.initContainers }}
+      initContainers:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: manager
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --health-probe-bind-address=:8081
+          env:
+            - name: DVC_NAMESPACE
+              value: {{ include "dvc.watchNamespace" . | quote }}
+            - name: DVC_DRY_RUN
+              value: {{ .Values.controller.dryRun | toString | quote }}
+            - name: DVC_GRACE_SECONDS
+              value: {{ .Values.controller.graceSeconds | toString | quote }}
+            - name: DVC_INTERVAL_SECONDS
+              value: {{ .Values.controller.intervalSeconds | toString | quote }}
+            - name: DVC_MANAGED_BY
+              value: {{ .Values.controller.managedBy | quote }}
+            - name: DVC_VERSION_LABEL
+              value: {{ $versionLabel | quote }}
+            - name: DVC_LOG_LEVEL
+              value: {{ .Values.controller.logLevel | quote }}
+            - name: DVC_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "databaseUrl.secretName is required" .Values.databaseUrl.secretName }}
+                  key: {{ .Values.databaseUrl.secretKey }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: health
+              containerPort: 8081
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- with .Values.extraVolumeMounts }}
+          volumeMounts:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        {{- with .Values.extraContainers }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.extraVolumes }}
+      volumes:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
