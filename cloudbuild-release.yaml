@@ -1,0 +1,68 @@
+# Release build. The Cloud Build trigger trg-dbos-version-controller-release runs it on a tag
+# vX.Y.Z. It pushes the image as X.Y.Z and the Helm chart as an OCI artifact of version X.Y.Z.
+#
+# The tag, the chart version and the chart appVersion must agree. The chart's default image tag is
+# its appVersion, so the build refuses to publish a chart that points at an image it did not push.
+#
+# Shell variables are written $$name, because Cloud Build substitutes $name and ${name} itself.
+# Each step reads the tag from the environment.
+steps:
+  - id: check-version
+    name: gcr.io/cloud-builders/gcloud
+    env: ["TAG=$TAG_NAME"]
+    entrypoint: bash
+    args:
+      - -ec
+      - |
+        [[ "$$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$$ ]] || { echo "Tag $$TAG is not vX.Y.Z" >&2; exit 1; }
+        version="$${TAG#v}"
+        chart=charts/dbos-version-controller/Chart.yaml
+        chart_version="$$(sed -n 's/^version: *//p' "$$chart")"
+        app_version="$$(sed -n 's/^appVersion: *//p' "$$chart" | tr -d '"')"
+        if [[ "$$chart_version" != "$$version" || "$$app_version" != "$$version" ]]; then
+          echo "Tag $$TAG does not match $$chart: version $$chart_version, appVersion $$app_version" >&2
+          exit 1
+        fi
+
+  - id: build-image
+    name: gcr.io/cloud-builders/docker
+    env: ["TAG=$TAG_NAME", "IMAGE=$_IMAGE", "SHA=$SHORT_SHA"]
+    entrypoint: bash
+    args:
+      - -ec
+      - docker build --tag="$$IMAGE:$${TAG#v}" --tag="$$IMAGE:$$SHA" .
+
+  # Push the image before the chart, so a published chart never points at a missing image.
+  - id: push-image
+    name: gcr.io/cloud-builders/docker
+    env: ["TAG=$TAG_NAME", "IMAGE=$_IMAGE", "SHA=$SHORT_SHA"]
+    entrypoint: bash
+    args:
+      - -ec
+      - |
+        docker push "$$IMAGE:$${TAG#v}"
+        docker push "$$IMAGE:$$SHA"
+
+  # Written after the image build, so the token never enters the Docker build context.
+  - id: registry-token
+    name: gcr.io/cloud-builders/gcloud
+    entrypoint: bash
+    args: ["-ec", "gcloud auth print-access-token > /workspace/.registry-token"]
+
+  - id: push-chart
+    name: alpine/helm:3.18.4
+    env: ["TAG=$TAG_NAME", "CHART_REPO=$_CHART_REPO"]
+    entrypoint: sh
+    args:
+      - -ec
+      - |
+        helm registry login "$${CHART_REPO%%/*}" --username oauth2accesstoken --password-stdin < /workspace/.registry-token
+        helm package charts/dbos-version-controller --destination /workspace/dist
+        helm push "/workspace/dist/dbos-version-controller-$${TAG#v}.tgz" "oci://$$CHART_REPO"
+
+substitutions:
+  _IMAGE: us.gcr.io/trustle-core-cicd/dbos-version-controller
+  _CHART_REPO: us-docker.pkg.dev/trustle-core-cicd/charts
+
+options:
+  logging: CLOUD_LOGGING_ONLY
