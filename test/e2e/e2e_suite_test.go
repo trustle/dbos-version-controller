@@ -33,6 +33,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -126,6 +127,7 @@ var _ = BeforeSuite(func() {
 	// for it.
 	mustRun(helmPath, "upgrade", "--install", controllerDeployment, chart,
 		"--namespace", controllerNamespace,
+		"--set", "crds.install="+strconv.FormatBool(crdInstallable()),
 		"--set", "image.repository="+repository,
 		"--set", "image.tag="+tag,
 		"--set", "controller.namespace="+workerNamespace,
@@ -153,6 +155,18 @@ var _ = ReportAfterSuite("controller logs", func(report Report) {
 	}
 	AddReportEntry("controller logs", out)
 })
+
+// crdInstallable reports whether the chart may render the WorkerVersionSet CRD. A reused cluster
+// can hold a CRD that an older suite applied with kubectl. Helm refuses to adopt an object that
+// carries no release metadata, so the chart then leaves the existing CRD alone.
+func crdInstallable() bool {
+	GinkgoHelper()
+	out, err := run("kubectl", "get", "crd", "workerversionsets.dbos.trustle.com",
+		"--ignore-not-found", "-o", "jsonpath={.metadata.name}/{.metadata.annotations.meta\\.helm\\.sh/release-name}")
+	Expect(err).NotTo(HaveOccurred())
+	name, release, _ := strings.Cut(strings.TrimSpace(out), "/")
+	return name == "" || release == controllerDeployment
+}
 
 // applyCreated runs one `kubectl create` client-side and applies the result, so the step is
 // idempotent. A reused cluster — one left behind by an interrupted run — would otherwise fail the

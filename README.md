@@ -261,6 +261,7 @@ ExternalSecret for the database URL. Each `DVC_` setting is one value. See
 [the chart README](charts/dbos-version-controller/README.md).
 
 ```bash
+kubectl create namespace dbos-workers
 kubectl create secret generic dbos-database -n dbos-workers \
   --from-literal=url=postgresql://user:pass@host:5432/dbos_sys
 helm install dbos-version-controller charts/dbos-version-controller \
