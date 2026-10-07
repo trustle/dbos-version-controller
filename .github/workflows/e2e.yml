@@ -25,7 +25,7 @@ jobs:
           cache: true
 
       # The suite installs the controller with the Helm chart.
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
         with:
           version: v3.18.4
 
