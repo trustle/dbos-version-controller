@@ -13,17 +13,33 @@ project is not affiliated with DBOS, Inc.
 
 ## Quickstart
 
-You need a Kubernetes cluster, [KEDA](https://keda.sh/), Helm 3 and a DBOS
+This repository is a starting point, not a hosted release: no public image or
+chart is published. Fork or clone it, build the image, and push it to a
+registry your cluster can pull from. Adapt the chart and the examples to your
+own application.
+
+You need a Kubernetes cluster, [KEDA](https://keda.sh/), Helm 3, Docker and a DBOS
 application image whose system database the cluster can reach.
 
-1. Install KEDA, if the cluster does not have it:
+1. Build and push the controller image. Replace the registry with your own:
+
+   ```bash
+   git clone https://github.com/trustle/dbos-version-controller.git
+   cd dbos-version-controller
+   make docker-build docker-push IMG=registry.example.com/dbos-version-controller:dev
+   ```
+
+   For a local [kind](https://kind.sigs.k8s.io/) cluster, load the image
+   instead of a push: `kind load docker-image registry.example.com/dbos-version-controller:dev`.
+
+2. Install KEDA, if the cluster does not have it:
 
    ```bash
    helm repo add kedacore https://kedacore.github.io/charts
    helm install keda kedacore/keda --namespace keda --create-namespace
    ```
 
-2. Store the DBOS system database URL in a Secret:
+3. Store the DBOS system database URL in a Secret:
 
    ```bash
    kubectl create namespace dbos-workers
@@ -35,16 +51,20 @@ application image whose system database the cluster can reach.
    The controller reads the key `url`. The example workers read the key
    `system-database-url`.
 
-3. Install the controller. The chart holds the CRD, the RBAC and the
-   Deployment:
+4. Install the controller from the chart in the checkout. The chart holds the
+   CRD, the RBAC and the Deployment:
 
    ```bash
-   helm install dbos-version-controller \
-     oci://ghcr.io/trustle/charts/dbos-version-controller --version 0.5.0 \
-     --namespace dbos-workers --set databaseUrl.secretName=dbos-database
+   helm install dbos-version-controller charts/dbos-version-controller \
+     --namespace dbos-workers --set databaseUrl.secretName=dbos-database \
+     --set image.repository=registry.example.com/dbos-version-controller \
+     --set image.tag=dev
    ```
 
-4. Give KEDA the same database URL. The example ScaledObject refers to this
+   Always set `image.repository`. The chart's default points at a private
+   registry.
+
+5. Give KEDA the same database URL. The example ScaledObject refers to this
    TriggerAuthentication:
 
    ```bash
@@ -62,7 +82,7 @@ application image whose system database the cluster can reach.
    YAML
    ```
 
-5. Copy `examples/workerversionset.yaml`. Set `spec.image` and the worker
+6. Copy `examples/workerversionset.yaml`. Set `spec.image` and the worker
    `command` for your application. Then apply it:
 
    ```bash
@@ -73,7 +93,7 @@ application image whose system database the cluster can reach.
    The controller creates a Deployment, a ScaledObject and a
    PodDisruptionBudget for `spec.version`.
 
-6. Deploy a new version. Change `spec.version` and `spec.image`, then watch the
+7. Deploy a new version. Change `spec.version` and `spec.image`, then watch the
    set:
 
    ```bash
@@ -380,35 +400,46 @@ a ServiceAccount, a RoleBinding and a Deployment.
 
 ## Install
 
-The Helm chart is the supported install. Each release publishes it to GHCR,
-next to the multi-architecture image `ghcr.io/trustle/dbos-version-controller`:
+The Helm chart in `charts/dbos-version-controller` is the supported install.
+No public image or chart is published, so build the image from a checkout with
+`make docker-build docker-push IMG=<your registry>/dbos-version-controller:<tag>`,
+and install the chart from the checkout:
 
 ```bash
-helm install dbos-version-controller \
-  oci://ghcr.io/trustle/charts/dbos-version-controller --version <X.Y.Z> \
-  --namespace dbos-workers --set databaseUrl.secretName=dbos-database
+helm install dbos-version-controller charts/dbos-version-controller \
+  --namespace dbos-workers --set databaseUrl.secretName=dbos-database \
+  --set image.repository=<your registry>/dbos-version-controller \
+  --set image.tag=<tag>
 ```
 
 The chart holds the CRD, the namespaced RBAC, the Deployment and, optionally, an
 ExternalSecret for the database URL. Each `DVC_` setting is one value. See
-[the chart README](charts/dbos-version-controller/README.md). From a checkout,
-use the chart directory `charts/dbos-version-controller` instead.
+[the chart README](charts/dbos-version-controller/README.md). The default
+`image.repository` is Trustle's private registry, so always override it, or
+change the default in your fork.
 
 The chart ships the CRD, so the schema and the controller that reads it change
 together. The CRD is cluster-scoped, so install the chart once per cluster.
 Neither Helm nor Argo CD deletes the CRD, because deleting it deletes every
 WorkerVersionSet. The controller and its sets are namespaced.
 
-Each GitHub Release also attaches `install.yaml`, the kubebuilder layout under
-`config/` rendered with the release image, as a cluster-scoped alternative.
-From a checkout:
+The kubebuilder layout under `config/` stays as a cluster-scoped alternative:
 
 ```bash
 make install                                  # the CRD only
-make deploy IMG=ghcr.io/trustle/dbos-version-controller:<X.Y.Z>
+make deploy IMG=<your registry>/dbos-version-controller:<tag>
 ```
 
 `examples/controller.yaml` holds the same objects as plain manifests.
+
+### Adapting a fork
+
+- Rename the API group `dbos.trustle.com` and the Go module path to your own
+  domain, if you want. The group appears in `api/v1alpha1/groupversion_info.go`,
+  the RBAC markers, the `SetLabel` constant in `internal/controller/render.go`
+  and the generated files. Run `make manifests generate` after the change.
+- `cloudbuild.yaml` and `cloudbuild-release.yaml` are Trustle's Google Cloud
+  Build pipelines. Delete them, or replace them with your own build.
 
 ## Safety rules
 

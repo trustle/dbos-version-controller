@@ -32,8 +32,8 @@ body:
   - type: input
     id: controller-version
     attributes:
-      label: Controller version
-      placeholder: "0.5.0"
+      label: Controller version or commit
+      placeholder: "0.4.0, or the commit your fork builds from"
     validations:
       required: true
   - type: input
