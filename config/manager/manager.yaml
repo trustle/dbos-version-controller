@@ -30,10 +30,8 @@ spec:
         control-plane: controller-manager
         app.kubernetes.io/name: dbos-version-controller
     spec:
-      # TODO(user): Uncomment the following code to configure the nodeAffinity expression
-      # according to the platforms which are supported by your solution.
-      # It is considered best practice to support multiple architectures. You can
-      # build your manager image using the makefile target docker-buildx.
+      # The release image supports linux/amd64 and linux/arm64. Uncomment the affinity below to
+      # keep the controller off nodes of another architecture.
       # affinity:
       #   nodeAffinity:
       #     requiredDuringSchedulingIgnoredDuringExecution:
@@ -44,8 +42,6 @@ spec:
       #             values:
       #               - amd64
       #               - arm64
-      #               - ppc64le
-      #               - s390x
       #           - key: kubernetes.io/os
       #             operator: In
       #             values:
@@ -98,8 +94,8 @@ spec:
             port: 8081
           initialDelaySeconds: 5
           periodSeconds: 10
-        # TODO(user): Configure the resources accordingly based on the project requirements.
-        # More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+        # The controller caches the WorkerVersionSets and Deployments of one namespace. These
+        # values suit a few sets; raise them for a namespace with many Deployments.
         resources:
           limits:
             cpu: 500m

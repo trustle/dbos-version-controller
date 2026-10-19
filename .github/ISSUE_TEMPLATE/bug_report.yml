@@ -1,0 +1,53 @@
+name: Bug report
+description: The controller did something wrong, or did not do something it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Report a security problem through the Security tab, not here. See SECURITY.md.
+        Remove the database URL and any other secret from everything you paste.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What the controller did, and what you expected it to do.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: The WorkerVersionSet, the change you made, and the order of events.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Status and logs
+      description: |
+        The output of `kubectl get wvs <name> -o yaml` (the status block), and the controller log
+        lines around the event.
+      render: text
+  - type: input
+    id: controller-version
+    attributes:
+      label: Controller version
+      placeholder: "0.5.0"
+    validations:
+      required: true
+  - type: input
+    id: kubernetes-version
+    attributes:
+      label: Kubernetes and KEDA versions
+      placeholder: "Kubernetes 1.35, KEDA 2.20"
+  - type: input
+    id: dbos-version
+    attributes:
+      label: DBOS SDK and version
+      placeholder: "DBOS Transact Python 3.2"
+  - type: dropdown
+    id: dry-run
+    attributes:
+      label: Was DVC_DRY_RUN on?
+      options: ["No", "Yes"]

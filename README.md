@@ -1,14 +1,95 @@
 # dbos-version-controller
 
-A small Kubernetes controller. It runs one worker Deployment per DBOS
-application version, and it removes an old version only after that version has
-no work left.
+A small Kubernetes controller for [DBOS](https://www.dbos.dev/) applications. It
+runs one worker Deployment per DBOS application version, and it removes an old
+version only after that version has no work left.
 
-Status: built for the London service at Trustle and in rollout there. Private for now.
+Status: `v1alpha1`. The controller runs Trustle's DBOS workers in staging and in
+production. The `WorkerVersionSet` API can still change before `v1`; the
+changelog records every change.
 
-Written in Go with kubebuilder v4 and controller-runtime. Version 0.3.0 replaced
-the original Python implementation. The `WorkerVersionSet` contract did not
-change, so an existing chart that renders the custom resource keeps working.
+The controller is written in Go with kubebuilder v4 and controller-runtime. This
+project is not affiliated with DBOS, Inc.
+
+## Quickstart
+
+You need a Kubernetes cluster, [KEDA](https://keda.sh/), Helm 3 and a DBOS
+application image whose system database the cluster can reach.
+
+1. Install KEDA, if the cluster does not have it:
+
+   ```bash
+   helm repo add kedacore https://kedacore.github.io/charts
+   helm install keda kedacore/keda --namespace keda --create-namespace
+   ```
+
+2. Store the DBOS system database URL in a Secret:
+
+   ```bash
+   kubectl create namespace dbos-workers
+   kubectl create secret generic dbos-database -n dbos-workers \
+     --from-literal=url=postgresql://user:pass@host:5432/dbos_sys \
+     --from-literal=system-database-url=postgresql://user:pass@host:5432/dbos_sys
+   ```
+
+   The controller reads the key `url`. The example workers read the key
+   `system-database-url`.
+
+3. Install the controller. The chart holds the CRD, the RBAC and the
+   Deployment:
+
+   ```bash
+   helm install dbos-version-controller \
+     oci://ghcr.io/trustle/charts/dbos-version-controller --version 0.5.0 \
+     --namespace dbos-workers --set databaseUrl.secretName=dbos-database
+   ```
+
+4. Give KEDA the same database URL. The example ScaledObject refers to this
+   TriggerAuthentication:
+
+   ```bash
+   kubectl apply -f - <<'YAML'
+   apiVersion: keda.sh/v1alpha1
+   kind: TriggerAuthentication
+   metadata:
+     name: dbos-postgres-auth
+     namespace: dbos-workers
+   spec:
+     secretTargetRef:
+       - parameter: connection
+         name: dbos-database
+         key: url
+   YAML
+   ```
+
+5. Copy `examples/workerversionset.yaml`. Set `spec.image` and the worker
+   `command` for your application. Then apply it:
+
+   ```bash
+   kubectl apply -f workerversionset.yaml
+   kubectl get wvs -n dbos-workers
+   ```
+
+   The controller creates a Deployment, a ScaledObject and a
+   PodDisruptionBudget for `spec.version`.
+
+6. Deploy a new version. Change `spec.version` and `spec.image`, then watch the
+   set:
+
+   ```bash
+   kubectl patch wvs dbos-worker -n dbos-workers --type merge \
+     -p '{"spec":{"version":"v20260917000000","image":"registry.example.com/app:new"}}'
+   kubectl get wvs dbos-worker -n dbos-workers -o jsonpath='{.status.versions}' -w
+   ```
+
+   The new version becomes `Current`. The old version becomes `Draining`: it
+   keeps its pods while it has `ENQUEUED` or `PENDING` workflows. When it has
+   none, it becomes `Drained`. After the grace period (`graceSeconds`, 600 by
+   default), the controller deletes its three objects.
+
+Use `--set controller.dryRun=true` on the first install to read the
+`Would create`, `Would patch` and `Would delete` log lines before the controller
+writes anything.
 
 ## The problem
 
@@ -30,6 +111,40 @@ This controller holds the list instead. Git holds one `WorkerVersionSet`
 custom resource per application, with the desired `(version, image)` pair. The
 controller owns everything else, and reports what it found on the resource's
 status.
+
+## Architecture
+
+Git, or any deploy pipeline, holds one value per application: the desired
+`(version, image)` pair in a `WorkerVersionSet`. The controller holds the list
+of live versions. Each version moves through four phases:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Current: spec.version names it
+    Current --> Draining: spec.version names another version
+    Draining --> Drained: 0 ENQUEUED + PENDING rows, 0 pods
+    Drained --> Draining: work or a pod returns
+    Drained --> [*]: grace period ends, objects deleted
+    Draining --> Current: rollback
+    Drained --> Current: rollback
+```
+
+- **Create.** The controller renders the set's three templates for the desired
+  version, and creates or patches the Deployment, the ScaledObject and the
+  PodDisruptionBudget.
+- **Drain.** For each old version, the controller replaces the ScaledObject's
+  triggers with one `postgresql` trigger that counts that version's `ENQUEUED`
+  and `PENDING` rows in `dbos.workflow_status`, and sets `minReplicaCount: 0`.
+  KEDA then keeps the old version's workers alive exactly while its own work
+  exists, and scales them up again if a retry or a recovery adds work.
+- **Delete.** A version with zero rows, zero worker pods and zero other pods that
+  carry its version label gets a drained-since marker. The controller deletes
+  its objects only when the marker is older than the grace period. Any work or
+  pod that returns clears the marker.
+
+The controller never deletes the desired version, and it deletes nothing when it
+cannot read the database or the pod list. It never starts DBOS: it reads one
+table over a short connection per reconcile.
 
 ## How it works
 
@@ -85,6 +200,16 @@ flowchart TD
     L --> N
     M --> N
 ```
+
+## Compatibility
+
+| Component | Tested with | Notes |
+| --- | --- | --- |
+| Kubernetes | 1.35 (kind in the e2e suite, GKE in production), 1.37 (envtest API server) | Uses only `apps/v1`, `policy/v1` and the core API. |
+| KEDA | 2.20 (production), the 2.17.2 ScaledObject CRD (envtest) | Needs `keda.sh/v1alpha1` ScaledObjects and the `postgresql` scaler. |
+| DBOS | DBOS Transact Python 3.2 (production) | The controller reads only `application_version` and `status` from `dbos.workflow_status`. Other DBOS SDKs write the same table, but they are not tested. |
+| PostgreSQL | 17 (e2e suite) | Any server that pgx 5 supports. |
+| Helm | 3.18 | The chart CI renders with Helm 3.18.4. |
 
 ## The WorkerVersionSet contract
 
@@ -255,30 +380,32 @@ a ServiceAccount, a RoleBinding and a Deployment.
 
 ## Install
 
-The Helm chart in `charts/dbos-version-controller` is the supported install. It
-holds the CRD, the namespaced RBAC, the Deployment and, optionally, an
-ExternalSecret for the database URL. Each `DVC_` setting is one value. See
-[the chart README](charts/dbos-version-controller/README.md).
+The Helm chart is the supported install. Each release publishes it to GHCR,
+next to the multi-architecture image `ghcr.io/trustle/dbos-version-controller`:
 
 ```bash
-kubectl create namespace dbos-workers
-kubectl create secret generic dbos-database -n dbos-workers \
-  --from-literal=url=postgresql://user:pass@host:5432/dbos_sys
-helm install dbos-version-controller charts/dbos-version-controller \
+helm install dbos-version-controller \
+  oci://ghcr.io/trustle/charts/dbos-version-controller --version <X.Y.Z> \
   --namespace dbos-workers --set databaseUrl.secretName=dbos-database
-kubectl apply -f examples/workerversionset.yaml
 ```
+
+The chart holds the CRD, the namespaced RBAC, the Deployment and, optionally, an
+ExternalSecret for the database URL. Each `DVC_` setting is one value. See
+[the chart README](charts/dbos-version-controller/README.md). From a checkout,
+use the chart directory `charts/dbos-version-controller` instead.
 
 The chart ships the CRD, so the schema and the controller that reads it change
 together. The CRD is cluster-scoped, so install the chart once per cluster.
 Neither Helm nor Argo CD deletes the CRD, because deleting it deletes every
 WorkerVersionSet. The controller and its sets are namespaced.
 
-The kubebuilder layout under `config/` stays as a cluster-scoped alternative:
+Each GitHub Release also attaches `install.yaml`, the kubebuilder layout under
+`config/` rendered with the release image, as a cluster-scoped alternative.
+From a checkout:
 
 ```bash
 make install                                  # the CRD only
-make deploy IMG=registry.example.com/dbos-version-controller:0.4.0
+make deploy IMG=ghcr.io/trustle/dbos-version-controller:<X.Y.Z>
 ```
 
 `examples/controller.yaml` holds the same objects as plain manifests.

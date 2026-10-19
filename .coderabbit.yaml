@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 #
-# CodeRabbit configuration for dbos-version-controller. Mirrors the Trustle
-# monorepo's review posture: concise, impact-first findings.
+# CodeRabbit configuration for dbos-version-controller: concise, impact-first
+# findings.
 tone_instructions: "Be concise and specific. For each issue, state the concrete impact and a suggested fix, and cite file:line. Don't restate the diff or add praise. Flag uncertainty instead of guessing."
 
 reviews:
@@ -23,5 +23,6 @@ reviews:
         change that weakens a gate, adds an ownerReference, or lets a template
         override an ownership label as a correctness bug. Dry run may write
         only status and the drained-since marker. Prefer the API server's
-        schema validation over re-validating in Go; flag Trustle-specific names
-        leaking into code or defaults.
+        schema validation over re-validating in Go; flag names specific to one
+        deployment (a company, a service or an environment) leaking into code
+        or defaults.

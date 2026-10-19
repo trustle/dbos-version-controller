@@ -1,0 +1,15 @@
+dbos-version-controller
+Copyright 2026 Trustle, Inc.
+
+This product includes software developed at Trustle, Inc. (https://www.trustle.com/).
+
+test/crds/keda.sh_scaledobjects.yaml is a copy of the ScaledObject
+CustomResourceDefinition from KEDA 2.17.2 (https://github.com/kedacore/keda),
+Copyright The KEDA Authors, licensed under the Apache License, Version 2.0. It is a
+test fixture and is not part of the controller image.
+
+The project scaffold comes from kubebuilder (https://github.com/kubernetes-sigs/kubebuilder),
+Copyright The Kubernetes Authors, licensed under the Apache License, Version 2.0.
+
+DBOS is a trademark of DBOS, Inc. This project is not affiliated with or endorsed
+by DBOS, Inc.
