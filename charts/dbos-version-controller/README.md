@@ -10,10 +10,17 @@ This chart installs the controller into one namespace. It renders:
 
 ## Install
 
+Each release publishes the chart to GHCR as an OCI artifact:
+
 ```bash
-helm install dbos-version-controller charts/dbos-version-controller \
+helm install dbos-version-controller oci://ghcr.io/trustle/charts/dbos-version-controller \
+  --version <X.Y.Z> \
   --namespace dbos-workers --set databaseUrl.secretName=dbos-database
 ```
+
+From a checkout, use the chart directory instead: `charts/dbos-version-controller`.
+The default image is `ghcr.io/trustle/dbos-version-controller` at the chart's
+`appVersion`. Set `image.repository` to pull it from a mirror.
 
 The Secret `dbos-database` must hold the DBOS system database URL under the key
 `url`. The image has no shell, so the URL must arrive as an environment

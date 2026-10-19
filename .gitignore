@@ -34,3 +34,6 @@ go.work
 
 # Registry token the release build writes
 .registry-token
+
+# Rendered install manifest and packaged chart from a release build
+dist/

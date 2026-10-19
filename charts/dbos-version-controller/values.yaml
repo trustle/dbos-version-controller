@@ -7,7 +7,7 @@ nameOverride: ""
 fullnameOverride: ""
 
 image:
-  repository: us.gcr.io/trustle-core-cicd/dbos-version-controller
+  repository: ghcr.io/trustle/dbos-version-controller
   # -- Defaults to the chart's appVersion.
   tag: ""
   pullPolicy: IfNotPresent

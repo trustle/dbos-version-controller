@@ -1,5 +1,6 @@
-# Optional. Trustle builds the controller image with Google Cloud Build.
-# Delete this file if you build the image another way.
+# Optional. Trustle mirrors every main build into its own registry with Google Cloud Build.
+# The public release path is .github/workflows/release.yml. Ignore this file if you do not use
+# Cloud Build.
 steps:
   - name: gcr.io/cloud-builders/docker
     args:

@@ -76,7 +76,7 @@ spec:
         runAsNonRoot: true
       containers:
         - name: controller
-          image: registry.example.com/dbos-version-controller:0.3.0
+          image: ghcr.io/trustle/dbos-version-controller:0.4.0
           # The image is distroless. It carries no shell, so every setting arrives as an
           # environment variable or a flag, never through a shell command.
           securityContext:

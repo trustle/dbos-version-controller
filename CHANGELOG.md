@@ -5,6 +5,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+- Releases publish to GHCR. A `vX.Y.Z` tag runs `.github/workflows/release.yml`: it builds the image for `linux/amd64` and `linux/arm64`, pushes it to `ghcr.io/trustle/dbos-version-controller` as `X.Y.Z` and `latest` with an SBOM and build provenance, pushes the chart to `oci://ghcr.io/trustle/charts/dbos-version-controller`, and creates a GitHub Release with the CRD, `install.yaml` and the packaged chart. The workflow refuses a tag that does not equal the chart's `version` and `appVersion`.
+- The chart's default `image.repository` is now `ghcr.io/trustle/dbos-version-controller`. A release that pulls from another registry must set `image.repository`.
+
 ## 0.4.0 — Helm chart and release pipeline; a version stays while another pod carries it
 
 - New Helm chart in `charts/dbos-version-controller`. It holds the CRD (on by default, behind `crds.install`; it carries Helm's `resource-policy: keep` and Argo CD's `Prune=false,Delete=false`, so neither tool deletes it), the namespaced ServiceAccount, Role and RoleBinding, the Deployment and an optional ExternalSecret for the database URL. Each `DVC_` setting is one value. `make manifests` copies the CRD and `config/rbac/role.yaml` into the chart, so the chart's Role always matches the reconciler's markers. The Deployment selector holds only `app.kubernetes.io/name=<full name>`, so a release with `fullnameOverride` can adopt an existing Deployment of that name.

@@ -1,4 +1,5 @@
-# Release build. The Cloud Build trigger trg-dbos-version-controller-release runs it on a tag
+# Optional. Trustle's mirror of the release build; the public release path is
+# .github/workflows/release.yml. The Cloud Build trigger trg-dbos-version-controller-release runs it on a tag
 # vX.Y.Z. It pushes the image as X.Y.Z and the Helm chart as an OCI artifact of version X.Y.Z.
 #
 # The tag, the chart version and the chart appVersion must agree. The chart's default image tag is
@@ -49,14 +50,16 @@ steps:
     entrypoint: bash
     args: ["-ec", "gcloud auth print-access-token > /workspace/.registry-token"]
 
+  # The chart's default image is GHCR. The mirror chart points at the mirror image instead.
   - id: push-chart
     name: alpine/helm:3.18.4
-    env: ["TAG=$TAG_NAME", "CHART_REPO=$_CHART_REPO"]
+    env: ["TAG=$TAG_NAME", "CHART_REPO=$_CHART_REPO", "IMAGE=$_IMAGE"]
     entrypoint: sh
     args:
       - -ec
       - |
         helm registry login "$${CHART_REPO%%/*}" --username oauth2accesstoken --password-stdin < /workspace/.registry-token
+        sed -i "s#^  repository: .*#  repository: $$IMAGE#" charts/dbos-version-controller/values.yaml
         helm package charts/dbos-version-controller --destination /workspace/dist
         helm push "/workspace/dist/dbos-version-controller-$${TAG#v}.tgz" "oci://$$CHART_REPO"
 

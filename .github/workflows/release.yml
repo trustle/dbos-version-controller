@@ -1,0 +1,122 @@
+name: Release
+
+# A tag vX.Y.Z publishes the image and the Helm chart to GHCR under version X.Y.Z, and creates
+# the GitHub Release. Nothing here runs on a branch, so a release is always deliberate.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      # contents: write creates the Release. packages: write pushes to GHCR.
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # The tag, the chart version and the chart appVersion must agree. The chart's default image
+      # tag is its appVersion, so a chart must never point at an image this run did not push.
+      - name: Check the tag against the chart
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Tag $TAG is not vX.Y.Z" >&2; exit 1; }
+          version="${TAG#v}"
+          chart=charts/dbos-version-controller/Chart.yaml
+          chart_version="$(sed -n 's/^version: *//p' "$chart")"
+          app_version="$(sed -n 's/^appVersion: *//p' "$chart" | tr -d '"')"
+          if [[ "$chart_version" != "$version" || "$app_version" != "$version" ]]; then
+            echo "Tag $TAG does not match $chart: version $chart_version, appVersion $app_version" >&2
+            exit 1
+          fi
+          {
+            echo "version=${version}"
+            echo "image=ghcr.io/${REPOSITORY,,}"
+            echo "charts=ghcr.io/${OWNER,,}/charts"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The Dockerfile carries no --platform=$BUILDPLATFORM, so it stays buildable by Cloud
+      # Build's legacy docker builder. Each architecture is therefore built in its own emulated
+      # container, and QEMU has to be present for the arm64 one.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Push the image before the chart, so a published chart never points at a missing image.
+      - name: Build and push the image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.version.outputs.image }}:${{ steps.version.outputs.version }}
+            ${{ steps.version.outputs.image }}:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.licenses=Apache-2.0
+          sbom: true
+          provenance: mode=max
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.18.4
+
+      - name: Package and push the chart
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          CHARTS: ${{ steps.version.outputs.charts }}
+          ACTOR: ${{ github.actor }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$TOKEN" | helm registry login ghcr.io --username "$ACTOR" --password-stdin
+          helm package charts/dbos-version-controller --destination dist
+          helm push "dist/dbos-version-controller-${VERSION}.tgz" "oci://${CHARTS}"
+
+      - name: Render the install manifest
+        env:
+          IMG: ${{ steps.version.outputs.image }}:${{ steps.version.outputs.version }}
+        run: make build-installer IMG="$IMG"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          body: |
+            Image: `${{ steps.version.outputs.image }}:${{ steps.version.outputs.version }}`
+            Chart: `oci://${{ steps.version.outputs.charts }}/dbos-version-controller`, version `${{ steps.version.outputs.version }}`
+
+            Install with Helm:
+
+            ```bash
+            helm install dbos-version-controller oci://${{ steps.version.outputs.charts }}/dbos-version-controller \
+              --version ${{ steps.version.outputs.version }} \
+              --namespace dbos-workers --set databaseUrl.secretName=dbos-database
+            ```
+
+            See `CHANGELOG.md` for what changed.
+          files: |
+            crd/dbos.trustle.com_workerversionsets.yaml
+            dist/install.yaml
+            dist/dbos-version-controller-${{ steps.version.outputs.version }}.tgz
