@@ -121,9 +121,11 @@ application image whose system database the cluster can reach.
    ```
 
    The new version becomes `Current`. The old version becomes `Draining`: it
-   keeps its pods while it has `ENQUEUED` or `PENDING` workflows. When it has
-   none, it becomes `Drained`. After the grace period (`graceSeconds`, 600 by
-   default), the controller deletes its three objects.
+   keeps its pods while it has `ENQUEUED` or `PENDING` workflows. It becomes
+   `Drained` when it has no such workflows, its worker Deployment has zero
+   replicas, and no other live pod carries its version label. After the grace
+   period (`graceSeconds`, 600 by default), the controller deletes its three
+   objects.
 
 Use `--set controller.dryRun=true` on the first install to read the
 `Would create`, `Would patch` and `Would delete` log lines before the controller
@@ -422,7 +424,9 @@ a ServiceAccount, a RoleBinding and a Deployment.
 
 The Helm chart in `charts/dbos-version-controller` is the supported install.
 No public image or chart is published, so build the image from a checkout and
-install the chart from the checkout. Set `REGISTRY` and `TAG` to your own values:
+install the chart from the checkout. The namespace and the `dbos-database`
+Secret must exist first; create them as in step 3 of the [Quickstart](#quickstart).
+Set `REGISTRY` and `TAG` to your own values:
 
 ```bash
 REGISTRY=registry.example.com
