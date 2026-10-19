@@ -164,7 +164,7 @@ of live versions. Each version moves through four phases:
 stateDiagram-v2
     [*] --> Current: spec.version names it
     Current --> Draining: spec.version names another version
-    Draining --> Drained: 0 ENQUEUED + PENDING rows, 0 pods
+    Draining --> Drained: 0 ENQUEUED + PENDING rows, 0 worker pods, 0 other pods with the version label
     Drained --> Draining: work or a pod returns
     Drained --> [*]: grace period ends, objects deleted
     Draining --> Current: rollback
