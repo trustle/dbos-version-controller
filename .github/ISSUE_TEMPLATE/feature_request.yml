@@ -1,0 +1,23 @@
+name: Feature request
+description: Propose a change to what the controller does.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you need to do, and why the controller does not let you do it now.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: The proposal
+      description: |
+        The change you propose. If it touches deletion, say how the three deletion gates (zero
+        outstanding rows, zero pods, the grace period) still hold.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: Other ways to solve the problem that you considered.
