@@ -21,16 +21,27 @@ own application.
 You need a Kubernetes cluster, [KEDA](https://keda.sh/), Helm 3, Docker and a DBOS
 application image whose system database the cluster can reach.
 
-1. Build and push the controller image. Replace the registry with your own:
+1. Build the controller image. Replace the registry with your own:
 
    ```bash
    git clone https://github.com/trustle/dbos-version-controller.git
    cd dbos-version-controller
-   make docker-build docker-push IMG=registry.example.com/dbos-version-controller:dev
+   export IMG=registry.example.com/dbos-version-controller:dev
+   make docker-build IMG="$IMG"
    ```
 
-   For a local [kind](https://kind.sigs.k8s.io/) cluster, load the image
-   instead of a push: `kind load docker-image registry.example.com/dbos-version-controller:dev`.
+   For a remote cluster, push the image to your registry:
+
+   ```bash
+   make docker-push IMG="$IMG"
+   ```
+
+   For a local [kind](https://kind.sigs.k8s.io/) cluster, load the image into
+   the node instead of a push:
+
+   ```bash
+   kind load docker-image "$IMG"
+   ```
 
 2. Install KEDA, if the cluster does not have it:
 
@@ -39,14 +50,22 @@ application image whose system database the cluster can reach.
    helm install keda kedacore/keda --namespace keda --create-namespace
    ```
 
-3. Store the DBOS system database URL in a Secret:
+3. Store the DBOS system database URL in a Secret. Write the URL to a file
+   that only you can read, so the password stays out of your shell history and
+   out of the `kubectl` arguments:
 
    ```bash
    kubectl create namespace dbos-workers
+   (umask 077; printf '%s' 'postgresql://user:pass@host:5432/dbos_sys' > dbos-url)
    kubectl create secret generic dbos-database -n dbos-workers \
-     --from-literal=url=postgresql://user:pass@host:5432/dbos_sys \
-     --from-literal=system-database-url=postgresql://user:pass@host:5432/dbos_sys
+     --from-file=url=dbos-url \
+     --from-file=system-database-url=dbos-url
+   rm dbos-url
    ```
+
+   The URL in the example is a placeholder. For a real database, write the file
+   with an editor, or sync the Secret from a secret manager. The chart can render
+   an ExternalSecret for it (`databaseUrl.externalSecret`).
 
    The controller reads the key `url`. The example workers read the key
    `system-database-url`.
@@ -57,8 +76,7 @@ application image whose system database the cluster can reach.
    ```bash
    helm install dbos-version-controller charts/dbos-version-controller \
      --namespace dbos-workers --set databaseUrl.secretName=dbos-database \
-     --set image.repository=registry.example.com/dbos-version-controller \
-     --set image.tag=dev
+     --set image.repository="${IMG%:*}" --set image.tag="${IMG##*:}"
    ```
 
    Always set `image.repository`. The chart's default points at a private
@@ -109,7 +127,9 @@ application image whose system database the cluster can reach.
 
 Use `--set controller.dryRun=true` on the first install to read the
 `Would create`, `Would patch` and `Would delete` log lines before the controller
-writes anything.
+changes any worker object. Dry run still writes the WorkerVersionSet status and
+the drained-since marker annotation, because both record only what the
+controller observed.
 
 ## The problem
 
@@ -401,15 +421,17 @@ a ServiceAccount, a RoleBinding and a Deployment.
 ## Install
 
 The Helm chart in `charts/dbos-version-controller` is the supported install.
-No public image or chart is published, so build the image from a checkout with
-`make docker-build docker-push IMG=<your registry>/dbos-version-controller:<tag>`,
-and install the chart from the checkout:
+No public image or chart is published, so build the image from a checkout and
+install the chart from the checkout. Set `REGISTRY` and `TAG` to your own values:
 
 ```bash
+REGISTRY=registry.example.com
+TAG=dev
+make docker-build docker-push IMG="$REGISTRY/dbos-version-controller:$TAG"
 helm install dbos-version-controller charts/dbos-version-controller \
   --namespace dbos-workers --set databaseUrl.secretName=dbos-database \
-  --set image.repository=<your registry>/dbos-version-controller \
-  --set image.tag=<tag>
+  --set image.repository="$REGISTRY/dbos-version-controller" \
+  --set image.tag="$TAG"
 ```
 
 The chart holds the CRD, the namespaced RBAC, the Deployment and, optionally, an
@@ -427,7 +449,7 @@ The kubebuilder layout under `config/` stays as a cluster-scoped alternative:
 
 ```bash
 make install                                  # the CRD only
-make deploy IMG=<your registry>/dbos-version-controller:<tag>
+make deploy IMG="$REGISTRY/dbos-version-controller:$TAG"
 ```
 
 `examples/controller.yaml` holds the same objects as plain manifests.
