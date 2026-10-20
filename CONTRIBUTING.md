@@ -72,8 +72,7 @@ A release publishes the image and the Helm chart under one semver version.
    git push origin vX.Y.Z
    ```
 
-The tag runs the Cloud Build trigger `trg-dbos-version-controller-release` in
-trustle-core-cicd (region `us-central1`), with `cloudbuild-release.yaml`. The
+The tag runs Trustle's Cloud Build release trigger with `cloudbuild-release.yaml`. The
 build fails unless the tag equals the chart's `version` and `appVersion`. It
 pushes the image `us.gcr.io/trustle-core-cicd/dbos-version-controller:X.Y.Z`
 first, then the chart `oci://us-docker.pkg.dev/trustle-core-cicd/charts/dbos-version-controller`
@@ -81,4 +80,4 @@ at version `X.Y.Z`. Do not push a published version again: to fix a
 release, cut the next patch version.
 
 Every push to `main` still builds an image tagged with the short commit SHA,
-through `trg-dbos-version-controller` and `cloudbuild.yaml`.
+through `cloudbuild.yaml`.
