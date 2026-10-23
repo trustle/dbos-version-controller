@@ -86,13 +86,20 @@ var (
 	imagePattern   = regexp.MustCompile(`^[A-Za-z0-9./:_@-]+$`)
 )
 
-// OutstandingSQL counts the unfinished workflows of one application version. The version is
-// bound as a parameter.
+// OutstandingSQL counts the unfinished workflows of one application version, for the delete
+// gate. The version is bound as a parameter.
+//
+// It counts DELAYED rows: a delayed workflow becomes ENQUEUED when its delay ends, and needs an
+// executor of its own version then. A version holding only DELAYED work is never marked drained.
 const OutstandingSQL = "SELECT count(*) FROM dbos.workflow_status " +
-	"WHERE application_version = $1 AND status IN ('ENQUEUED','PENDING')"
+	"WHERE application_version = $1 AND status IN ('ENQUEUED','DELAYED','PENDING')"
 
-// outstandingSQLFor returns the outstanding-workflow query with the version inlined, for a KEDA
-// trigger.
+// outstandingSQLFor returns the runnable-workflow query with the version inlined, for a draining
+// version's KEDA trigger.
+//
+// It counts ENQUEUED and PENDING rows only. A DELAYED row cannot run before its delay ends, so
+// counting it would hold pods up for work they cannot take; once it becomes ENQUEUED, KEDA scales
+// the version up again. The delete gate counts it through OutstandingSQL.
 //
 // KEDA carries no parameter binding, so the version is substituted literally. Every caller
 // validates it against versionPattern first, which admits no quote character.

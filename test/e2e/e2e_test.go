@@ -63,7 +63,7 @@ var _ = Describe("WorkerVersionSet", Ordered, func() {
 			g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
 			g.Expect(ready.Reason).To(Equal("Reconciled"))
 
-			current := versionEntry(g, status, firstVersion)
+			current := firstVersionEntry(g, status)
 			g.Expect(current.Phase).To(Equal(dbosv1alpha1.PhaseCurrent))
 			g.Expect(current.Image).To(Equal("registry.k8s.io/pause:3.10"))
 			// The count comes from the controller's real query against the real Postgres, so a
@@ -109,7 +109,7 @@ var _ = Describe("WorkerVersionSet", Ordered, func() {
 
 		By("reporting the old version as Draining with nothing outstanding")
 		Eventually(func(g Gomega) {
-			old := versionEntry(g, readStatus(ctx, g), firstVersion)
+			old := firstVersionEntry(g, readStatus(ctx, g))
 			g.Expect(old.Phase).To(Equal(dbosv1alpha1.PhaseDraining))
 			g.Expect(old.Outstanding).NotTo(BeNil())
 			g.Expect(*old.Outstanding).To(BeZero())
@@ -143,7 +143,7 @@ var _ = Describe("WorkerVersionSet", Ordered, func() {
 
 		By("reporting the old version as Draining with its one row")
 		Eventually(func(g Gomega) {
-			old := versionEntry(g, readStatus(ctx, g), firstVersion)
+			old := firstVersionEntry(g, readStatus(ctx, g))
 			g.Expect(old.Phase).To(Equal(dbosv1alpha1.PhaseDraining))
 			g.Expect(old.Outstanding).NotTo(BeNil())
 			g.Expect(*old.Outstanding).To(Equal(int64(1)))
@@ -153,6 +153,18 @@ var _ = Describe("WorkerVersionSet", Ordered, func() {
 		// The pods are already at zero: the row is the only thing left holding it.
 		Consistently(func(g Gomega) {
 			g.Expect(k8s.Get(ctx, workerKey(firstVersion), &appsv1.Deployment{})).To(Succeed())
+		}).WithTimeout(holdWindow).WithPolling(poll).Should(Succeed())
+
+		By("keeping the old version while its only row is DELAYED")
+		// A workflow enqueued with a delay waits as DELAYED, then becomes ENQUEUED at its own
+		// version. The version must still be there when it does.
+		psql("UPDATE dbos.workflow_status SET status = 'DELAYED' WHERE workflow_uuid = 'wf-1'")
+		Consistently(func(g Gomega) {
+			g.Expect(k8s.Get(ctx, workerKey(firstVersion), &appsv1.Deployment{})).To(Succeed())
+			old := firstVersionEntry(g, readStatus(ctx, g))
+			g.Expect(old.Phase).To(Equal(dbosv1alpha1.PhaseDraining))
+			g.Expect(old.Outstanding).NotTo(BeNil())
+			g.Expect(*old.Outstanding).To(Equal(int64(1)))
 		}).WithTimeout(holdWindow).WithPolling(poll).Should(Succeed())
 	})
 
@@ -192,18 +204,14 @@ func readStatus(ctx context.Context, g Gomega) dbosv1alpha1.WorkerVersionSetStat
 	return set.Status
 }
 
-// versionEntry returns the status entry of one version, failing when it is absent.
-func versionEntry(
-	g Gomega,
-	status dbosv1alpha1.WorkerVersionSetStatus,
-	version string,
-) dbosv1alpha1.VersionStatus {
+// firstVersionEntry returns the status entry of the first version, failing when it is absent.
+func firstVersionEntry(g Gomega, status dbosv1alpha1.WorkerVersionSetStatus) dbosv1alpha1.VersionStatus {
 	for _, entry := range status.Versions {
-		if entry.Version == version {
+		if entry.Version == firstVersion {
 			return entry
 		}
 	}
-	g.Expect(status.Versions).To(ContainElement(HaveField("Version", version)))
+	g.Expect(status.Versions).To(ContainElement(HaveField("Version", firstVersion)))
 	return dbosv1alpha1.VersionStatus{}
 }
 

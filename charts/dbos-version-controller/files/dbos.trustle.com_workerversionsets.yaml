@@ -186,8 +186,8 @@ spec:
                       type: string
                     outstanding:
                       description: |-
-                        outstanding is the count of ENQUEUED plus PENDING workflow rows of this version. Absent when
-                        the database was unreachable.
+                        outstanding is the count of ENQUEUED, DELAYED and PENDING workflow rows of this version.
+                        Absent when the database was unreachable.
                       format: int64
                       type: integer
                     phase:

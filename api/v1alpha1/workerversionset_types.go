@@ -90,8 +90,8 @@ type VersionStatus struct {
 	// +optional
 	Image string `json:"image,omitempty"`
 
-	// outstanding is the count of ENQUEUED plus PENDING workflow rows of this version. Absent when
-	// the database was unreachable.
+	// outstanding is the count of ENQUEUED, DELAYED and PENDING workflow rows of this version.
+	// Absent when the database was unreachable.
 	// +optional
 	Outstanding *int64 `json:"outstanding,omitempty"`
 

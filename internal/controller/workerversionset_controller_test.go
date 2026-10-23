@@ -386,6 +386,70 @@ func TestClearsTheMarkerWhenWorkflowsReappear(t *testing.T) {
 	}
 }
 
+func TestAVersionWithOnlyDelayedWorkIsKeptPastTheGracePeriod(t *testing.T) {
+	f := newFixture(t)
+	f.createSet(setName, desiredVersion)
+	f.createWorker(setName, oldVersion, 0, map[string]string{
+		DrainedSinceAnnotation: timestamp(now.Add(-2 * time.Hour)),
+	})
+	f.createScaledObject(oldVersion)
+	// Enqueued with a delay: DELAYED now, ENQUEUED at this version once the delay ends.
+	f.rowsByStatus[oldVersion] = map[string]int64{"DELAYED": 2, "SUCCESS": 5}
+
+	f.reconcile(setName)
+
+	if !f.present(kindDeployment, workerName(oldVersion)) {
+		t.Fatal("a version deleted while it still had DELAYED workflows")
+	}
+	if _, marked := f.deployment(workerName(oldVersion)).Annotations[DrainedSinceAnnotation]; marked {
+		t.Fatal("the drained marker survived DELAYED workflows")
+	}
+	entry := f.versionStatusOf(setName, oldVersion)
+	if entry.Phase != dbosv1alpha1.PhaseDraining {
+		t.Fatalf("a version with DELAYED workflows reports phase %s", entry.Phase)
+	}
+	if entry.Outstanding == nil || *entry.Outstanding != 2 {
+		t.Fatalf("a version with two DELAYED workflows reports outstanding %v", entry.Outstanding)
+	}
+}
+
+func TestTheDrainTriggerDoesNotCountDelayedWork(t *testing.T) {
+	f := newFixture(t)
+	f.createSet(setName, desiredVersion)
+	f.createWorker(setName, oldVersion, 0, nil)
+	f.createScaledObject(oldVersion)
+	f.rowsByStatus[oldVersion] = map[string]int64{"DELAYED": 2}
+
+	f.reconcile(setName)
+
+	// A DELAYED workflow cannot run before its delay ends, so it scales no pod up. The delete
+	// gate counts it instead.
+	metadata, _ := soleTrigger(t, f.scaledObject(workerName(oldVersion)))["metadata"].(map[string]any)
+	query, _ := metadata["query"].(string)
+	if query != drainQueryFor(oldVersion) {
+		t.Fatalf("the drain query is %v", metadata["query"])
+	}
+	if got := countByStatus(query, f.rowsByStatus[oldVersion]); got != 0 {
+		t.Fatalf("the drain trigger counts %d DELAYED workflows, want 0", got)
+	}
+}
+
+func TestFinishedWorkflowsDoNotHoldAVersion(t *testing.T) {
+	f := newFixture(t)
+	f.createSet(setName, desiredVersion)
+	f.createWorker(setName, oldVersion, 0, map[string]string{
+		DrainedSinceAnnotation: timestamp(now.Add(-2 * time.Hour)),
+	})
+	f.createScaledObject(oldVersion)
+	f.rowsByStatus[oldVersion] = map[string]int64{"SUCCESS": 5, "ERROR": 1, "CANCELLED": 1}
+
+	f.reconcile(setName)
+
+	if f.present(kindDeployment, workerName(oldVersion)) {
+		t.Fatal("finished workflows held a drained version past its grace period")
+	}
+}
+
 func TestAPodOutsideTheSetThatCarriesTheVersionKeepsItPastTheGracePeriod(t *testing.T) {
 	f := newFixture(t)
 	f.createSet(setName, desiredVersion)
