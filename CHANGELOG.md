@@ -5,7 +5,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## 0.4.1 — A version with delayed work is kept
+
 - A version with `DELAYED` workflows is no longer marked drained. DBOS holds a workflow enqueued with a delay as `DELAYED`, then makes it `ENQUEUED` at its own version. The delete gate counted only `ENQUEUED` and `PENDING`, so a version holding only delayed work could be deleted after its grace period, and the work would become `ENQUEUED` with no executor. The delete gate now counts `ENQUEUED`, `DELAYED` and `PENDING`, matching the DBOS upgrade guide, and `status.versions[].outstanding` counts the same rows. The KEDA trigger of a draining version still counts only `ENQUEUED` and `PENDING`: a delayed workflow cannot run yet, so it keeps no pod up.
+- The Go dependencies move to controller-runtime 0.25.2 and the Kubernetes client libraries 0.37.1.
 
 ## 0.4.0 — Helm chart and release pipeline; a version stays while another pod carries it
 
