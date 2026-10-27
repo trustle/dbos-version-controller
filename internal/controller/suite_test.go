@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -208,6 +210,9 @@ type fixture struct {
 	clock time.Time
 	// rows answers the injected outstanding counter, keyed by version.
 	rows map[string]int64
+	// rowsByStatus holds workflow rows keyed by version, then by status. The injected counter
+	// counts those whose status OutstandingSQL names, on top of rows.
+	rowsByStatus map[string]map[string]int64
 	// countErr fails the injected outstanding counter when set.
 	countErr error
 }
@@ -236,6 +241,8 @@ func newFixture(t *testing.T, options ...func(*config.Config)) *fixture {
 		logs:      logs,
 		clock:     now,
 		rows:      map[string]int64{},
+
+		rowsByStatus: map[string]map[string]int64{},
 	}
 	f.ctx = logf.IntoContext(ctx, zapr.NewLogger(zap.New(core)))
 	f.reconciler = &WorkerVersionSetReconciler{
@@ -248,10 +255,26 @@ func newFixture(t *testing.T, options ...func(*config.Config)) *fixture {
 			if f.countErr != nil {
 				return 0, f.countErr
 			}
-			return f.rows[version], nil
+			return f.rows[version] + countByStatus(OutstandingSQL, f.rowsByStatus[version]), nil
 		},
 	}
 	return f
+}
+
+// statusList matches the status list of a workflow_status query.
+var statusList = regexp.MustCompile(`status IN \(([^)]*)\)`)
+
+// countByStatus sums the rows whose status the query's IN list names, the way Postgres would.
+func countByStatus(query string, rowsByStatus map[string]int64) int64 {
+	match := statusList.FindStringSubmatch(query)
+	if match == nil {
+		panic("the query has no status IN list: " + query)
+	}
+	var count int64
+	for quoted := range strings.SplitSeq(match[1], ",") {
+		count += rowsByStatus[strings.Trim(strings.TrimSpace(quoted), "'")]
+	}
+	return count
 }
 
 // dryRun turns on DVC_DRY_RUN for one fixture.

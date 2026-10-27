@@ -122,8 +122,9 @@ application image whose system database the cluster can reach.
 
    The new version becomes `Current`. The old version becomes `Draining`: it
    keeps its pods while it has `ENQUEUED` or `PENDING` workflows. It becomes
-   `Drained` when it has no such workflows, its worker Deployment has zero
-   replicas, and no other live pod carries its version label. After the grace
+   `Drained` when it has no `ENQUEUED`, `DELAYED` or `PENDING` workflows, its
+   worker Deployment has zero replicas, and no other live pod carries its
+   version label. After the grace
    period (`graceSeconds`, 600 by default), the controller deletes its three
    objects.
 
@@ -164,7 +165,7 @@ of live versions. Each version moves through four phases:
 stateDiagram-v2
     [*] --> Current: spec.version names it
     Current --> Draining: spec.version names another version
-    Draining --> Drained: 0 ENQUEUED + PENDING rows, 0 worker pods, 0 other pods with the version label
+    Draining --> Drained: 0 ENQUEUED + DELAYED + PENDING rows, 0 worker pods, 0 other pods with the version label
     Drained --> Draining: work or a pod returns
     Drained --> [*]: grace period ends, objects deleted
     Draining --> Current: rollback
@@ -178,11 +179,14 @@ stateDiagram-v2
   triggers with one `postgresql` trigger that counts that version's `ENQUEUED`
   and `PENDING` rows in `dbos.workflow_status`, and sets `minReplicaCount: 0`.
   KEDA then keeps the old version's workers alive exactly while its own work
-  exists, and scales them up again if a retry or a recovery adds work.
-- **Delete.** A version with zero rows, zero worker pods and zero other pods that
-  carry its version label gets a drained-since marker. The controller deletes
-  its objects only when the marker is older than the grace period. Any work or
-  pod that returns clears the marker.
+  exists, and scales them up again if a retry or a recovery adds work. The
+  trigger leaves out `DELAYED` rows: a delayed workflow cannot run before its
+  delay ends, and KEDA scales the version up once it becomes `ENQUEUED`.
+- **Delete.** A version with zero `ENQUEUED`, `DELAYED` and `PENDING` rows,
+  zero worker pods and zero other pods that carry its version label gets a
+  drained-since marker. The controller deletes its objects only when the marker
+  is older than the grace period. Any work or pod that returns clears the
+  marker.
 
 The controller never deletes the desired version, and it deletes nothing when it
 cannot read the database or the pod list. It never starts DBOS: it reads one
@@ -205,11 +209,13 @@ For one set:
 5. List every Deployment carrying both
    `app.kubernetes.io/managed-by=<managed_by>` and
    `dbos.trustle.com/worker-version-set=<set name>`. Skip the desired version.
-6. For each other version, count its `ENQUEUED` and `PENDING` rows in
-   `dbos.workflow_status`.
+6. For each other version, count its `ENQUEUED`, `DELAYED` and `PENDING` rows
+   in `dbos.workflow_status`. A `DELAYED` workflow becomes `ENQUEUED` at its own
+   version when its delay ends, so it holds the version too.
 7. Park that version: patch its ScaledObject to `minReplicaCount: 0` with one
-   postgresql trigger that counts the same rows. KEDA then scales the version up
-   when its own work appears, and back to zero when that work finishes.
+   postgresql trigger that counts its `ENQUEUED` and `PENDING` rows. KEDA then
+   scales the version up when its own work appears, and back to zero when that
+   work finishes.
 8. Count the pods in the namespace that carry `<version_label>=<version>` but
    not `app.kubernetes.io/managed-by=<managed_by>`, and are not `Succeeded` or
    `Failed`: pods outside the set that still run that version, such as an API
@@ -231,7 +237,7 @@ flowchart TD
     D --> E[List this set's managed Deployments]
     E --> F{Is this the desired version?}
     F -- yes --> E
-    F -- no --> G[Count ENQUEUED + PENDING rows for that version]
+    F -- no --> G[Count ENQUEUED + DELAYED + PENDING rows for that version]
     G --> H[Patch ScaledObject: minReplicaCount 0, one outstanding trigger]
     H --> I{rows = 0, worker pods = 0 and no other pod carries the version?}
     I -- no --> J[Clear the drained marker]

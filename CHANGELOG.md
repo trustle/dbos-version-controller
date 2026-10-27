@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+- A version with `DELAYED` workflows is no longer marked drained. DBOS holds a workflow enqueued with a delay as `DELAYED`, then makes it `ENQUEUED` at its own version. The delete gate counted only `ENQUEUED` and `PENDING`, so a version holding only delayed work could be deleted after its grace period, and the work would become `ENQUEUED` with no executor. The delete gate now counts `ENQUEUED`, `DELAYED` and `PENDING`, matching the DBOS upgrade guide, and `status.versions[].outstanding` counts the same rows. The KEDA trigger of a draining version still counts only `ENQUEUED` and `PENDING`: a delayed workflow cannot run yet, so it keeps no pod up.
+
 ## 0.4.0 — Helm chart and release pipeline; a version stays while another pod carries it
 
 - New Helm chart in `charts/dbos-version-controller`. It holds the CRD (on by default, behind `crds.install`; it carries Helm's `resource-policy: keep` and Argo CD's `Prune=false,Delete=false`, so neither tool deletes it), the namespaced ServiceAccount, Role and RoleBinding, the Deployment and an optional ExternalSecret for the database URL. Each `DVC_` setting is one value. `make manifests` copies the CRD and `config/rbac/role.yaml` into the chart, so the chart's Role always matches the reconciler's markers. The Deployment selector holds only `app.kubernetes.io/name=<full name>`, so a release with `fullnameOverride` can adopt an existing Deployment of that name.
